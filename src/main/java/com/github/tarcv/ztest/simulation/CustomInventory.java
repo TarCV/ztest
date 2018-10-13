@@ -11,12 +11,9 @@ public abstract class CustomInventory extends Thing {
         throw new AssertionError("CustomInventory inheritors must implement Pickup states");
     }
 
-    public final void pickupBy(Thing owner) {
-        if (!(owner instanceof Owner)) {
-            throw new IllegalArgumentException("Trying to give item to " + owner.getClass().getSimpleName());
-        }
+    final void pickupBy(Thing owner) {
         this.owner = owner;
         this.setActivator(owner);
-        this.Pickup();
+        simulation.scheduleOnNextTic(this::Pickup);
     }
 }

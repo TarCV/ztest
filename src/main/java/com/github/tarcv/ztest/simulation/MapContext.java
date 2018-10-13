@@ -1,4 +1,4 @@
-package com.github.tarcv.ztest.simulation;
+    package com.github.tarcv.ztest.simulation;
 
 import com.sun.istack.internal.Nullable;
 
@@ -9,13 +9,12 @@ import java.util.*;
 import static com.github.tarcv.ztest.simulation.MapContext.ScriptType.*;
 
 public class MapContext {
-    private final List<Script> scripts = Collections.synchronizedList(new ArrayList<>());
+    private final List<Script> scripts = Collections.synchronizedList(new ArrayList<>()); // TODO: make read-only
     private final Set<Player> joinedPlayers = new HashSet<>();
     private final ScriptContext context;
     private final MapContextCreator ctor;
     private final Simulation simulation;
     private final MapContext rootContext;
-    private ThreadLocal<Simulation.DelayableContext> delayableContext = new ThreadLocal<>();
 
     protected interface MapContextCreator {
         MapContext create(Simulation simulation, MapContext context);
@@ -25,8 +24,12 @@ public class MapContext {
         this.ctor = supplier;
         this.simulation = simulation;
         this.context = new ScriptContext(simulation, null);
-        this.rootContext = rootContext == null ? this : rootContext;
-        this.simulation.registerScriptEventsListener(this);
+        if (rootContext == null) {
+            this.rootContext = this;
+            this.simulation.registerScriptEventsListener(this);
+        } else {
+            this.rootContext = rootContext;
+        }
     }
 
     // TODO: use annotations instead of this method
@@ -110,26 +113,29 @@ public class MapContext {
 
     protected void delay(int tics) {
         if (tics <= 0) throw new IllegalArgumentException("tics number must be positive");
-        synchronized (this) {
-            delayableContext.get().setDelayed(true);
-            int targetTic = simulation.getCurrentTic();
-            while (simulation.getCurrentTic() < targetTic) {
-                MapContext that = this;
-                simulation.scheduleOnNextTic(new Simulation.DelayableRunnable() {
-                    @Override
-                    public void run() {
-                        if (simulation.getCurrentTic() >= targetTic) {
-                            that.notify();
+        synchronized (this) { // TODO: replace this lock if needed
+            Simulation.getThreadContext().setDelayed(true);
+            int targetTic = simulation.getCurrentTic() + tics;
+            simulation.scheduleOnNextTic(new Runnable() {
+                @Override
+                public void run() {
+                    if (simulation.getCurrentTic() >= targetTic) {
+                        synchronized (MapContext.this) {
+                            MapContext.this.notify();
                         }
+                    } else {
+                        simulation.scheduleOnNextTic(this);
                     }
-                });
+                }
+            });
+            while (simulation.getCurrentTic() < targetTic) {
                 try {
                     this.wait();
                 } catch (InterruptedException e) {
                     throw new RuntimeException(e);
                 }
             }
-            delayableContext.get().setDelayed(false);
+            Simulation.getThreadContext().setDelayed(false);
         }
     }
 
@@ -253,7 +259,7 @@ public class MapContext {
     protected void Thing_Damage2(int tid, int damage, String mod) {
         DamageType damageType;
         try {
-            damageType = (DamageType) Class.forName(mod).newInstance();
+            damageType = (DamageType) simulation.classForSimpleName(mod).newInstance();
         } catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
             throw new IllegalArgumentException(e);
         }
@@ -295,10 +301,10 @@ public class MapContext {
         if (rootContext != this) {
             throw new IllegalStateException("Method can only be called on the original map context");
         }
-        schedulScriptsByType(ENTER, player);
+        scheduleScriptsByType(ENTER, player);
     }
 
-    private void schedulScriptsByType(ScriptType enter, Thing activator) {
+    private void scheduleScriptsByType(ScriptType enter, Thing activator) {
         synchronized (scripts) {
             scripts.forEach(script -> {
                 if (script.type.contains(enter)) {
@@ -314,14 +320,14 @@ public class MapContext {
         if (rootContext != this) {
             throw new IllegalStateException("Method can only be called on the original map context");
         }
-        schedulScriptsByType(RESPAWN, player);
+        scheduleScriptsByType(RESPAWN, player);
     }
 
     void onPlayerKilled(PlayerPawn player) {
         if (rootContext != this) {
             throw new IllegalStateException("Method can only be called on the original map context");
         }
-        schedulScriptsByType(DEATH, player);
+        scheduleScriptsByType(DEATH, player);
         // TODO: implement calling fragged EVENT script call
     }
 
@@ -329,26 +335,26 @@ public class MapContext {
         if (rootContext != this) {
             throw new IllegalStateException("Method can only be called on the original map context");
         }
-        synchronized (scripts) {
-            scripts.forEach(script -> {
-                if (script.type.contains(ScriptType.OPEN)) {
-                    scheduleScriptOnThisContext(script.name);
-                }
-            });
-        }
+        scheduleScriptsByType(OPEN, null);
     }
 
     private void scheduleScriptOnThisContext(String name, Object... args) {
         Method scriptMethod = findScriptMethodByName(name);
-        simulation.scheduleOnNextTic(new Simulation.DelayableRunnable() {
-            @Override
-            public void run() {
+        MapContext that = this;
+        simulation.scheduleOnNextTic(() -> {
                 try {
-                    scriptMethod.invoke(this, args);
-                } catch (IllegalAccessException | InvocationTargetException e) {
+                    scriptMethod.setAccessible(true);
+                    scriptMethod.invoke(that, args);
+                } catch (IllegalAccessException e) {
                     throw new IllegalStateException(e);
+                } catch (InvocationTargetException e) {
+                    Throwable targetException = e.getTargetException();
+                    if (targetException instanceof TerminateScriptException) {
+                        // workaround to emulate `terminate` statement
+                    } else {
+                        throw new IllegalStateException(e);
+                    }
                 }
-            }
         });
     }
 

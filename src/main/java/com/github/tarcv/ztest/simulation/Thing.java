@@ -1,5 +1,7 @@
 package com.github.tarcv.ztest.simulation;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
 import java.util.*;
 import java.util.function.Consumer;
 
@@ -48,7 +50,7 @@ public class Thing {
         properties.put(name, value);
     }
 
-    private void verifyPropertyNameAndValue(String name, Object value) {
+    protected void verifyPropertyNameAndValue(String name, Object value) {
         throw new IllegalArgumentException("Unknown property " + name);
     }
 
@@ -88,18 +90,29 @@ public class Thing {
     }
 
     public void A_GiveInventory(String className, int count) {
+        giveInventory(className, count);
+    }
+
+    void giveInventory(String className, int count) {
         try {
-            Class<?> aClass = Class.forName(className);
+            Class<?> aClass = simulation.classForSimpleName(className);
+            Constructor<?> constructor = aClass.getDeclaredConstructor(Simulation.class);
+            constructor.setAccessible(true);
             for (int i = 0; i < count; i++) {
-                CustomInventory item = (CustomInventory) aClass.newInstance();
+                CustomInventory item = (CustomInventory) constructor.newInstance(simulation);
                 activator.pickItem(item);
             }
-        } catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
+        } catch (InstantiationException | IllegalAccessException | ClassNotFoundException | NoSuchMethodException
+                | InvocationTargetException e) {
             throw new RuntimeException(e);
         }
     }
 
     public void A_TakeInventory(String className, int count) {
+        takeInventory(className, count);
+    }
+
+    void takeInventory(String className, int count) {
         for (int i = 0; i < count; i++) {
             activator.removeItem(className);
         }

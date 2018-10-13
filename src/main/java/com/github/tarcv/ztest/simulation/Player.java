@@ -9,7 +9,6 @@ import static com.github.tarcv.ztest.simulation.Symbols.PLAYERINFO_PLAYERCLASS;
 
 public class Player implements Owner {
     private final Hud console = new Hud();
-    private final Object lock = new Object();
     private final String name;
     private final Simulation simulation;
     private final int initialHealth;
@@ -39,7 +38,7 @@ public class Player implements Owner {
     }
 
     public void joinGame() {
-        synchronized (lock) {
+        simulation.withTickLock(() -> {
             if (pawn == null) {
                 this.pawn = createPawn();
                 simulation.onPlayerJoined(pawn);
@@ -47,7 +46,7 @@ public class Player implements Owner {
                 this.pawn = createPawn();
                 simulation.onPlayerRespawned(pawn);
             }
-        }
+        });
     }
 
     private PlayerPawn createPawn() {
@@ -55,7 +54,7 @@ public class Player implements Owner {
     }
 
     void setProperty(int which, int value) {
-        synchronized (lock) {
+        simulation.assertTickLockHeld(); {
             switch (which) {
                 case PROP_FROZEN:
                     frozen = value != 0;
@@ -70,8 +69,8 @@ public class Player implements Owner {
     }
 
     boolean isSpectator() {
-        synchronized (lock) {
-            return this.pawn != null;
+        simulation.assertTickLockHeld(); {
+            return this.pawn == null;
         }
     }
 
@@ -80,7 +79,7 @@ public class Player implements Owner {
     }
 
     Object getCVarInternal(String name) {
-        synchronized (lock) {
+        simulation.assertTickLockHeld(); {
             if (!simulation.getCVarType(name).isPlayerOwned()) throw new IllegalArgumentException("CVAR is not a user one");
             return userCvarValues.get(name);
         }
@@ -104,7 +103,7 @@ public class Player implements Owner {
     }
 
     void setCVar(String name, String newValue) {
-        synchronized (lock) {
+        simulation.assertTickLockHeld(); {
             if (!simulation.getCVarType(name).isPlayerOwned()) throw new IllegalArgumentException("CVAR is not a user one");
             userCvarValues.put(name, newValue);
         }

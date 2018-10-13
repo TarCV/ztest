@@ -12,6 +12,21 @@ public class PowerupGiver extends CustomInventory {
         // TODO
     }
 
+    @Override
+    protected void verifyPropertyNameAndValue(String name, Object value) {
+        switch (name) {
+            case "Powerup.Duration":
+                assert value instanceof Integer;
+                break;
+            case "Powerup.Type":
+                if (!value.equals("GhostTint")) {
+                    throw new UnsupportedOperationException("Only \"GhostTint\" is supported");
+                }
+                break;
+            default:
+                super.verifyPropertyNameAndValue(name, value);
+        }
+    }
 
     @Override
     public final Object Pickup() {
