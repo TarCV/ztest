@@ -7,9 +7,11 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.*;
 
+import static com.github.tarcv.ztest.simulation.MapContext.ScriptType.*;
+
 public class MapContext {
     private final List<Script> scripts = Collections.synchronizedList(new ArrayList<>());
-    private final Set<Player> joinedPlayers = new HashSet<Player>();
+    private final Set<Player> joinedPlayers = new HashSet<>();
     private final ScriptContext context;
     private final Constructor<? extends MapContext> ctor;
     private final Simulation simulation;
@@ -28,13 +30,13 @@ public class MapContext {
     }
 
     // TODO: use annotations instead of this method
-    protected void addScript(String name, String type) {
-        scripts.add(new Script(name, ScriptType.valueOf(type)));
+    protected void addScript(String name, ScriptType type) {
+        scripts.add(new Script(name, type));
     }
 
     // TODO: use annotations instead of this method
     protected void addScript(String name) {
-        addScript(name, ScriptType.CLOSED.name());
+        addScript(name, CLOSED);
     }
 
     protected void ACS_NamedExecuteWait(String name, int where, Object... args) {
@@ -45,7 +47,7 @@ public class MapContext {
     protected void print(String format, Object... args) {
         Thing activator = context.getActivator();
         if (activator instanceof PlayerPawn) {
-            ((PlayerPawn)activator).printbold(format, args);
+            ((PlayerPawn)activator).print(format, args);
         } else {
             throw new AssertionError("HUD actions should executed by players only");
         }
@@ -57,49 +59,107 @@ public class MapContext {
 
 
     protected void printbold(String format, Object... args) {
-
+        simulation.getPlayers().forEach(p -> p.printbold(format, args));
     }
 
-    protected void SetPlayerProperty(int playerNumber, int value, int which) {
+    protected void setPlayerProperty(int who, int value, int which) {
+        if (who == 1) {
+            simulation.getPlayers().forEach(p -> p.setProperty(which, value));
+        } else if (who == 0) {
+            Thing activator = activator();
+            if (activator instanceof PlayerPawn) {
+                ((PlayerPawn) activator).getPlayer().setProperty(which, value);
+            } else {
+                throw new IllegalStateException("activator must be a player");
+            }
+        } else {
+            throw new IllegalArgumentException("who should be 0 or 1");
+        }
+    }
 
+    private Thing activator() {
+        return context.getActivator();
     }
 
     protected int checkInventory(String name) {
-        return 0;
+        return activator().checkInventory(name);
     }
 
-    protected void ACS_NamedExecuteAlways(String qcde_duel_showDraft, int i) {
+    protected boolean ACS_NamedExecuteAlways(String name, int map, Object... args) {
+        if (map != 0) throw new UnsupportedOperationException("Executing script on other map is not supported");
+        if (args.length > 3) throw new IllegalArgumentException("At most 3 script argument can be set");
+        scheduleScriptOnThisContext(name, args);
+        return true;
     }
 
     protected int playerIsSpectator(int playerNumber) {
-        return 0;
+        boolean spectator = simulation
+                .getPlayerByIndex(playerNumber)
+                .isSpectator();
+        return spectator ? 1 : 0;
     }
 
     protected int playerNumber() {
-        return 0;
+        Thing activator = activator();
+        if (activator instanceof PlayerPawn) {
+            return ((PlayerPawn) activator).getPlayer().getIndex();
+        } else {
+            throw new IllegalStateException("activator must be a player");
+        }
     }
 
     protected void delay(int tics) {
-
+        if (tics <= 0) throw new IllegalArgumentException("tics number must be positive");
+        int targetTic = simulation.getCurrentTic();
+        synchronized (this) {
+            while (simulation.getCurrentTic() < targetTic) {
+                MapContext that = this;
+                simulation.scheduleOnNextTic(() -> {
+                    if (simulation.getCurrentTic() >= targetTic) {
+                        that.notify();
+                    }
+                });
+                try {
+                    this.wait();
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        }
     }
 
     protected int getCVar(String name) {
-        return 0;
+        return (int) getCVarInternal(name);
     }
+
+    private Object getCVarInternal(String name) {
+        Simulation.CVarTypes cVarType = simulation.getCVarType(name);
+        if (!cVarType.isPlayerOwned()) {
+            return simulation.getCVarInternal(name);
+        } else {
+            Thing activator = activator();
+            if (activator instanceof PlayerPawn) {
+                return ((PlayerPawn) activator).getPlayer().getCVarInternal(name);
+            } else {
+                throw new IllegalStateException("activator must be a player");
+            }
+        }
+    }
+
     protected int random(int min, int maxInclusive) {
-        return 0;
+        return simulation.random(min, maxInclusive);
     }
 
     protected void hudmessage(int type, int id, int color, double x, double y, double time, String format, Object... args) {
-
+        // TODO
     }
 
     protected void setFont(String fontName) {
-
+        // TODO
     }
 
     protected void setHudSize(int width, int height, boolean includeStatusBar) {
-
+        // TODO
     }
 
     protected void terminate() {
@@ -107,90 +167,139 @@ public class MapContext {
     }
 
     protected boolean playerIsBot(int pn) {
-        return false;
+        Thing activator = activator();
+        if (activator instanceof PlayerPawn) {
+            return ((PlayerPawn) activator).getPlayer().isBot();
+        } else {
+            throw new IllegalStateException("activator must be a player");
+        }
     }
 
     protected int playerCount() {
-        return 0;
+        return simulation.getPlayers().size();
     }
 
     protected int getPlayerInfo(int playerNumber, int whichInfo) {
-        return 0;
+        return simulation.getPlayerByIndex(playerNumber).getInfo(whichInfo);
     }
 
     protected int timer() {
-        return 0;
+        return simulation.getCurrentTic();
     }
 
-    protected void giveInventory(String itemActivated, int count) {
-
+    protected void giveInventory(String item, int count) {
+        activator().A_GiveInventory(item, count);
     }
 
     protected int playerClass(int playerNumber) {
-        return 0;
+        return simulation.getPlayerByIndex(playerNumber).getPawnClass();
     }
 
     protected int playerHealth() {
-        return 100;
+        return ((Actor)activator()).getHealth();
     }
 
     protected void Thing_ChangeTID(int targetTid, int newTid) {
-
+        simulation
+                .assertedGetThingsByTid(targetTid, activator())
+                .forEach(t -> t.setTid(newTid));
     }
 
-    protected boolean isTidUsed(int mytid) {
-        return false;
+    protected boolean isTidUsed(int tid) {
+        if (tid == 0) throw new IllegalArgumentException("tid should not be 0");
+        return !simulation
+                .assertedGetThingsByTid(tid, null)
+                .isEmpty();
     }
 
     protected int activatorTID() {
-        return 0;
+        return activator().getTid();
     }
 
     protected void consoleCommand(String command) {
+        Thing activator = activator();
+        if (activator instanceof PlayerPawn) {
+            throw new UnsupportedOperationException("TODO");
+        } else {
+            throw new UnsupportedOperationException("Only player as an activator is supported");
+        }
 
     }
 
-    protected void setCVarString(String cvar, String newValue) {
+    protected boolean setCVarString(String name, String newValue) {
+        Simulation.CVarTypes cVarType = simulation.getCVarType(name);
+        if (!cVarType.isModifiableFromScripts()) {
+            throw new IllegalArgumentException("CVar is not modifiable from ACS or DECORATE");
+        }
 
+        if (!cVarType.isPlayerOwned()) {
+            simulation.setCVar(name, newValue);
+        } else {
+            Thing activator = activator();
+            if (activator instanceof PlayerPawn) {
+                ((PlayerPawn) activator).getPlayer().setCVar(name, newValue);
+            } else {
+                throw new IllegalStateException("activator must be a player");
+            }
+        }
+        return true;
     }
 
-    protected void Thing_Damage(int tid, int damage, String mod) {
-
+    protected void Thing_Damage2(int tid, int damage, String mod) {
+        DamageType damageType;
+        try {
+            damageType = (DamageType) Class.forName(mod).newInstance();
+        } catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
+            throw new IllegalArgumentException(e);
+        }
+        simulation.assertedGetThingsByTid(tid, activator()).forEach(
+                t -> ((Actor)t).damageThing(damage, damageType, activator()));
     }
 
     protected void setActivator(int newtid) {
-
+        if (newtid == 0) throw new IllegalArgumentException("newtid must not be 0");
+        List<Thing> things = simulation.assertedGetThingsByTid(newtid, null);
+        if (things.size() != 1) throw new IllegalStateException("there should be exactly one thing with the given tid");
+        context.setActivator(things.get(0));
     }
 
-    protected void spawnForced(String type, double x, double y, int todo, int newtid, int todo2) {
-
+    protected int spawnForced(String type, double x, double y, int z, int newtid, int angle) {
+        simulation.createThing(type, x, y, z, newtid, angle);
+        return 1;
     }
 
     protected int uniqueTID() {
-        return 0;
+        return simulation.createUniqueTid();
     }
-    protected void setActorVelocity(int velx, int vely, int velz, int todo, boolean todo1, boolean todo2) {
-
+    protected void setActorVelocity(int tid, double velx, double vely, double velz, boolean add, boolean setbob) {
+        if (add) throw new UnsupportedOperationException("add is not supported");
+        if (setbob) throw new UnsupportedOperationException("setbob is not supported");
+        simulation.assertedGetThingsByTid(tid, activator()).forEach(t -> t.setVelocity(velx, vely, velz));
     }
-    protected String getCVarString(String cvar) {
-        return "";
+    protected String getCVarString(String name) {
+        return (String) getCVarInternal(name);
     }
 
     protected int getActorProperty(int tid, int which) {
+        List<Thing> things = simulation.assertedGetThingsByTid(tid, activator());
+        if (things.size() != 0) throw new IllegalStateException("Only one thing should be found by given tid");
         return 0;
     }
 
-    void onPlayerJoined(PlayerPawn playerPawn) {
+    void onPlayerJoined(PlayerPawn player) {
         if (rootContext != this) {
             throw new IllegalStateException("Method can only be called on the original map context");
         }
+        schedulScriptsByType(ENTER, player);
+    }
+
+    private void schedulScriptsByType(ScriptType enter, Thing activator) {
         synchronized (scripts) {
-            boolean firstTimeJoined = joinedPlayers.add(playerPawn.getPlayer());
             scripts.forEach(script -> {
                 try {
-                    if ((firstTimeJoined && script.type.contains(ScriptType.ENTER))
-                     || (!firstTimeJoined && script.type.contains(ScriptType.RESPAWN))) {
+                    if (script.type.contains(enter)) {
                         MapContext mapContext = ctor.newInstance(simulation, rootContext);
+                        mapContext.context.setActivator(activator);
                         mapContext.scheduleScriptOnThisContext(script.name);
                     }
                 } catch (InstantiationException | IllegalAccessException | InvocationTargetException e) {
@@ -198,6 +307,21 @@ public class MapContext {
                 }
             });
         }
+    }
+
+    void onPlayerRespawned(PlayerPawn player) {
+        if (rootContext != this) {
+            throw new IllegalStateException("Method can only be called on the original map context");
+        }
+        schedulScriptsByType(RESPAWN, player);
+    }
+
+    void onPlayerKilled(PlayerPawn player) {
+        if (rootContext != this) {
+            throw new IllegalStateException("Method can only be called on the original map context");
+        }
+        schedulScriptsByType(DEATH, player);
+        // TODO: implement calling fragged EVENT script call
     }
 
     void onMapLoaded() {
@@ -243,13 +367,14 @@ public class MapContext {
         }
     }
 
-    private enum ScriptType {
+    public enum ScriptType {
         CLOSED,
         OPEN,
         ENTER,
         DEATH,
         NET,
         EVENT,
-        RESPAWN
+        RESPAWN,
+        DISCONNECT
     }
 }

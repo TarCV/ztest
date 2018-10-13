@@ -3,7 +3,7 @@ package com.github.tarcv.ztest.simulation;
 public class PowerupGiver extends CustomInventory {
     protected void setProperty(String property, int r, int g, int n, double r1, double g1, double b1) {
         if (!"Powerup.Colormap".equals(property)) {
-            throw new IllegalArgumentException("Only \"Powerup.Colormap\" is supported");
+            throw new IllegalArgumentException("Only \"Powerup.Colormap\" property can be written using this syntax");
         }
         // TODO
     }
@@ -12,7 +12,7 @@ public class PowerupGiver extends CustomInventory {
     @Override
     public final Object Pickup() {
         if (hasFlag("INVENTORY.AUTOACTIVATE") && hasFlag("INVENTORY.ALWAYSPICKUP")) {
-            getActivator().pickItem(new Powerup());
+            getActivator().pickItem(new Powerup(simulation));
         } else {
             throw new UnsupportedOperationException();
         }

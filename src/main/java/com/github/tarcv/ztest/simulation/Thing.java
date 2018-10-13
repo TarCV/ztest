@@ -8,13 +8,24 @@ public class Thing {
     private final Map<String, Object> properties = Collections.synchronizedMap(new HashMap<>());
     private final List<State> stateList = Collections.synchronizedList(new ArrayList<>());
     private final List<CustomInventory> inventory = Collections.synchronizedList(new ArrayList<>());
+    protected final Simulation simulation;
     private volatile Thing activator = this;
+    private volatile int tid = 0;
+    private volatile double x = 0;
+    private volatile double y = 0;
+    private volatile double z = 0;
+    private volatile int angle = 0;
+    private volatile double velx = 0;
+    private volatile double vely = 0;
+    private volatile double velz = 0;
+    private volatile double alpha = 1.0;
 
-    public Thing(Simulation simulation) {
+    Thing(Simulation simulation) {
         simulation.registerThing(this);
+        this.simulation = simulation;
     }
 
-    protected Thing getActivator() {
+    Thing getActivator() {
         return activator;
     }
 
@@ -28,7 +39,7 @@ public class Thing {
         }
     }
 
-    public final boolean hasFlag(String flag) {
+    final boolean hasFlag(String flag) {
         return flags.contains(flag.toUpperCase());
     }
 
@@ -37,7 +48,7 @@ public class Thing {
         properties.put(name, value);
     }
 
-    protected void verifyPropertyNameAndValue(String name, Object value) {
+    private void verifyPropertyNameAndValue(String name, Object value) {
         throw new IllegalArgumentException("Unknown property " + name);
     }
 
@@ -59,7 +70,7 @@ public class Thing {
         }
     }
 
-    protected void setActivator(Thing owner) {
+    void setActivator(Thing owner) {
         this.activator = owner;
     }
 
@@ -71,7 +82,7 @@ public class Thing {
         }
     }
 
-    protected void pickItem(CustomInventory item) {
+    void pickItem(CustomInventory item) {
         inventory.add(item);
         item.pickupBy(this);
     }
@@ -131,7 +142,7 @@ public class Thing {
     }
 
     public void A_SetTranslucent(double alpha) {
-
+        // TODO
     }
 
     public void SetPlayerProperty(int who, int set, int which) {
@@ -144,7 +155,39 @@ public class Thing {
 
     }
 
-    public static class State {
+    int checkInventory(String name) {
+        synchronized (inventory) {
+            return (int) inventory.stream()
+                    .filter(i -> i.getClass().getSimpleName().equalsIgnoreCase(name))
+                    .count();
+        }
+    }
+
+    int getTid() {
+        return tid;
+    }
+
+    void setTid(int tid) {
+        this.tid = tid;
+    }
+
+    void setPosition(double x, double y, double z) {
+        this.x = x;
+        this.y = y;
+        this.z = z;
+    }
+
+    void setAngle(int angle) {
+        this.angle = angle;
+    }
+
+    void setVelocity(double velx, double vely, double velz) {
+        this.velx = velx;
+        this.vely = vely;
+        this.velz = velz;
+    }
+
+    private static class State {
         private final String spriteFrame;
         private final int duration;
 

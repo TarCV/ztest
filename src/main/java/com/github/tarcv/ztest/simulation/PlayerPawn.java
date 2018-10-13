@@ -2,11 +2,18 @@ package com.github.tarcv.ztest.simulation;
 
 public class PlayerPawn extends Actor {
     private final Player player;
+    private final int classIndex;
 
-    public PlayerPawn(Simulation simulation, Player player, int health, int armor) {
+    PlayerPawn(Simulation simulation, Player player, int playerclass, int health, int armor) {
         super(simulation);
         this.player = player;
-        this.A_GiveInventory("Health", health);
+        this.classIndex = playerclass;
+        int currentHealth = getHealth();
+        if (health > currentHealth) {
+            this.A_GiveInventory("Health", health - currentHealth);
+        } else if (health < currentHealth) {
+            this.A_TakeInventory("Health", currentHealth - health);
+        }
         this.A_GiveInventory("Armor", armor);
     }
 
@@ -24,10 +31,14 @@ public class PlayerPawn extends Actor {
     }
 
     void SetPlayerProperty(int which, int set) {
-        // TODO
+        player.setProperty(which, set);
     }
 
-    public void printbold(String format, Object[] args) {
+    void print(String format, Object[] args) {
         player.printbold(format, args);
+    }
+
+    int getClassIndex() {
+        return classIndex;
     }
 }
