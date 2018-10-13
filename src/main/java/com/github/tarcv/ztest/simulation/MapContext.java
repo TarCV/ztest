@@ -2,7 +2,6 @@ package com.github.tarcv.ztest.simulation;
 
 import com.sun.istack.internal.Nullable;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.*;
@@ -13,20 +12,21 @@ public class MapContext {
     private final List<Script> scripts = Collections.synchronizedList(new ArrayList<>());
     private final Set<Player> joinedPlayers = new HashSet<>();
     private final ScriptContext context;
-    private final Constructor<? extends MapContext> ctor;
+    private final MapContextCreator ctor;
     private final Simulation simulation;
     private final MapContext rootContext;
+    private ThreadLocal<Simulation.DelayableContext> delayableContext = new ThreadLocal<>();
 
-    public MapContext(Simulation simulation, @Nullable MapContext rootContext) {
-        try {
-            this.ctor = this.getClass().getConstructor(Simulation.class, MapContext.class);
-        } catch (NoSuchMethodException e) {
-            throw new IllegalStateException(e);
-        }
+    protected interface MapContextCreator {
+        MapContext create(Simulation simulation, MapContext context);
+    }
+
+    public MapContext(Simulation simulation, @Nullable MapContext rootContext, MapContextCreator supplier) {
+        this.ctor = supplier;
         this.simulation = simulation;
         this.context = new ScriptContext(simulation, null);
         this.rootContext = rootContext == null ? this : rootContext;
-        simulation.registerScriptEventsListener(this);
+        this.simulation.registerScriptEventsListener(this);
     }
 
     // TODO: use annotations instead of this method
@@ -110,13 +110,17 @@ public class MapContext {
 
     protected void delay(int tics) {
         if (tics <= 0) throw new IllegalArgumentException("tics number must be positive");
-        int targetTic = simulation.getCurrentTic();
         synchronized (this) {
+            delayableContext.get().setDelayed(true);
+            int targetTic = simulation.getCurrentTic();
             while (simulation.getCurrentTic() < targetTic) {
                 MapContext that = this;
-                simulation.scheduleOnNextTic(() -> {
-                    if (simulation.getCurrentTic() >= targetTic) {
-                        that.notify();
+                simulation.scheduleOnNextTic(new Simulation.DelayableRunnable() {
+                    @Override
+                    public void run() {
+                        if (simulation.getCurrentTic() >= targetTic) {
+                            that.notify();
+                        }
                     }
                 });
                 try {
@@ -125,6 +129,7 @@ public class MapContext {
                     throw new RuntimeException(e);
                 }
             }
+            delayableContext.get().setDelayed(false);
         }
     }
 
@@ -296,14 +301,10 @@ public class MapContext {
     private void schedulScriptsByType(ScriptType enter, Thing activator) {
         synchronized (scripts) {
             scripts.forEach(script -> {
-                try {
-                    if (script.type.contains(enter)) {
-                        MapContext mapContext = ctor.newInstance(simulation, rootContext);
-                        mapContext.context.setActivator(activator);
-                        mapContext.scheduleScriptOnThisContext(script.name);
-                    }
-                } catch (InstantiationException | IllegalAccessException | InvocationTargetException e) {
-                    throw new IllegalStateException(e);
+                if (script.type.contains(enter)) {
+                    MapContext mapContext = ctor.create(simulation, rootContext);
+                    mapContext.context.setActivator(activator);
+                    mapContext.scheduleScriptOnThisContext(script.name);
                 }
             });
         }
@@ -339,11 +340,14 @@ public class MapContext {
 
     private void scheduleScriptOnThisContext(String name, Object... args) {
         Method scriptMethod = findScriptMethodByName(name);
-        simulation.scheduleOnNextTic(() -> {
-            try {
-                scriptMethod.invoke(this, args);
-            } catch (IllegalAccessException | InvocationTargetException e) {
-                throw new IllegalStateException(e);
+        simulation.scheduleOnNextTic(new Simulation.DelayableRunnable() {
+            @Override
+            public void run() {
+                try {
+                    scriptMethod.invoke(this, args);
+                } catch (IllegalAccessException | InvocationTargetException e) {
+                    throw new IllegalStateException(e);
+                }
             }
         });
     }

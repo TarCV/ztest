@@ -2,6 +2,8 @@ package com.github.tarcv.ztest.simulation;
 
 import java.lang.reflect.InvocationTargetException;
 import java.util.*;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -12,7 +14,8 @@ public class Simulation {
     private final Player[] players = new Player[32];
     private final List<Thing> things = new ArrayList<>();
     private final List<MapContext> scriptEventListeners = new ArrayList<>();
-    private final List<Runnable> scheduledRunnables = new ArrayList<>();
+    private final List<DelayableRunnable> scheduledRunnables = new ArrayList<>();
+    private final List<SchedulerThread> schedulerThreads = new ArrayList<SchedulerThread>();
     private final Map<String, CVarTypes> cvarTypes = new HashMap<>();
     private final Map<String, Object> serverCvarValues = new HashMap<>();
     private final Random randomSource;
@@ -64,7 +67,7 @@ public class Simulation {
         fireScriptEventListeners(listener -> listener.onPlayerRespawned(player));
     }
 
-    void scheduleOnNextTic(Runnable runnable) {
+    void scheduleOnNextTic(DelayableRunnable runnable) {
         synchronized (lock) {
             scheduledRunnables.add(runnable);
         }
@@ -191,6 +194,27 @@ public class Simulation {
         return 0;
     }
 
+    public void runTicks(int ticks) throws TimeoutException, InterruptedException {
+        for (int i = 0; i < ticks; i++) {
+            synchronized (lock) {
+                while (!scheduledRunnables.isEmpty()) {
+                    DelayableRunnable runnable = scheduledRunnables.remove(randomSource.nextInt(scheduledRunnables.size()));
+                    SchedulerThread thread = new SchedulerThread(runnable);
+                    schedulerThreads.add(thread);
+                }
+
+                List<SchedulerThread> newThreads = new ArrayList<>();
+                while (!schedulerThreads.isEmpty()) {
+                    SchedulerThread thread = schedulerThreads.remove(0);
+                    if (!thread.tryJoin()) {
+                        newThreads.add(thread);
+                    }
+                }
+                schedulerThreads.addAll(newThreads);
+            }
+        }
+    }
+
     enum CVarTypes {
         USER(false, true),
         USER_CUSTOM(true, true),
@@ -212,5 +236,52 @@ public class Simulation {
         boolean isPlayerOwned() {
             return this.isPlayerOwned;
         }
+    }
+
+    private static class SchedulerThread {
+        private final DelayableRunnable runnable;
+        private final Thread thread;
+
+        private SchedulerThread(DelayableRunnable runnable) {
+            this.runnable = runnable;
+
+            Thread newThread = new Thread(runnable, "Scheduled actions thread");
+            newThread.setDaemon(true);
+            this.thread = newThread;
+        }
+
+        private boolean isDelayed() {
+            return runnable.delayableContext.get().delayed.get();
+        }
+
+        private void start() {
+            thread.start();
+        }
+
+        private boolean tryJoin() throws InterruptedException, TimeoutException {
+            thread.join(200);
+            if (thread.isAlive()) {
+                boolean isDelayed = runnable.delayableContext.get().delayed.get();
+                if (isDelayed) {
+                    return false;
+                } else {
+                    throw new TimeoutException("Some thread is run-away. Probably you forgot to add 'delay'?");
+                }
+            } else {
+                return true;
+            }
+        }
+    }
+
+    static class DelayableContext {
+        private final AtomicBoolean delayed = new AtomicBoolean();
+
+        void setDelayed(boolean value) {
+            delayed.set(value);
+        }
+    }
+
+    abstract static class DelayableRunnable implements Runnable {
+        private ThreadLocal<DelayableContext> delayableContext = ThreadLocal.withInitial(DelayableContext::new);
     }
 }
