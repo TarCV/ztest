@@ -1,10 +1,11 @@
     package com.github.tarcv.ztest.simulation;
 
-import com.sun.istack.internal.Nullable;
+import org.jetbrains.annotations.Nullable;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.*;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import static com.github.tarcv.ztest.simulation.MapContext.ScriptType.*;
@@ -16,6 +17,7 @@ public class MapContext {
     private final MapContextCreator ctor;
     private final Simulation simulation;
     private final MapContext rootContext;
+    private final List<String> executedScripts = Collections.synchronizedList(new ArrayList<>());
 
     protected interface MapContextCreator {
         MapContext create(Simulation simulation, MapContext context);
@@ -45,7 +47,12 @@ public class MapContext {
 
     protected void ACS_NamedExecuteWait(String name, int where, Object... args) {
         if (where != 0) throw new IllegalArgumentException("where must be 0");
-        // TODO
+        scheduleScriptOnThisContext(name, args);
+        ScriptWait(name);
+    }
+
+    protected void ScriptWait(String name) {
+        delayUntil(context -> !context.executedScripts.contains(name));
     }
 
     protected void print(String format, Object... args) {
@@ -70,23 +77,23 @@ public class MapContext {
         if (who == 1) {
             simulation.getPlayers().forEach(p -> p.setProperty(which, value));
         } else if (who == 0) {
-            Thing activator = activator();
+            Thing activator = activatorInternal();
             if (activator instanceof PlayerPawn) {
                 ((PlayerPawn) activator).getPlayer().setProperty(which, value);
             } else {
-                throw new IllegalStateException("activator must be a player");
+                throw new IllegalStateException("activatorInternal must be a player");
             }
         } else {
             throw new IllegalArgumentException("who should be 0 or 1");
         }
     }
 
-    private Thing activator() {
+    protected Thing activatorInternal() {
         return context.getActivator();
     }
 
     protected int checkInventory(String name) {
-        return activator().checkInventory(name);
+        return activatorInternal().checkInventory(name);
     }
 
     protected boolean ACS_NamedExecuteAlways(String name, int map, Object... args) {
@@ -104,23 +111,27 @@ public class MapContext {
     }
 
     protected int playerNumber() {
-        Thing activator = activator();
+        Thing activator = activatorInternal();
         if (activator instanceof PlayerPawn) {
             return ((PlayerPawn) activator).getPlayer().getIndex();
         } else {
-            throw new IllegalStateException("activator must be a player");
+            throw new IllegalStateException("activatorInternal must be a player");
         }
     }
 
     protected void delay(int tics) {
         if (tics <= 0) throw new IllegalArgumentException("tics number must be positive");
+        int targetTic = simulation.getCurrentTic() + tics;
+        delayUntil(context -> simulation.getCurrentTic() >= targetTic);
+    }
+
+    private void delayUntil(final Predicate<MapContext> predicate) {
         synchronized (this) { // TODO: replace this lock if needed
             Simulation.getThreadContext().setDelayed(true);
-            int targetTic = simulation.getCurrentTic() + tics;
             simulation.scheduleOnNextTic(new Runnable() {
                 @Override
                 public void run() {
-                    if (simulation.getCurrentTic() >= targetTic) {
+                    if (predicate.test(MapContext.this)) {
                         synchronized (MapContext.this) {
                             MapContext.this.notify();
                         }
@@ -129,7 +140,7 @@ public class MapContext {
                     }
                 }
             });
-            while (simulation.getCurrentTic() < targetTic) {
+            while (!predicate.test(MapContext.this)) {
                 try {
                     this.wait();
                 } catch (InterruptedException e) {
@@ -149,11 +160,11 @@ public class MapContext {
         if (!cVarType.isPlayerOwned()) {
             return simulation.getCVarInternal(name);
         } else {
-            Thing activator = activator();
+            Thing activator = activatorInternal();
             if (activator instanceof PlayerPawn) {
                 return ((PlayerPawn) activator).getPlayer().getCVarInternal(name);
             } else {
-                throw new IllegalStateException("activator must be a player");
+                throw new IllegalStateException("activatorInternal must be a player");
             }
         }
     }
@@ -179,11 +190,11 @@ public class MapContext {
     }
 
     protected boolean playerIsBot(int pn) {
-        Thing activator = activator();
+        Thing activator = activatorInternal();
         if (activator instanceof PlayerPawn) {
             return ((PlayerPawn) activator).getPlayer().isBot();
         } else {
-            throw new IllegalStateException("activator must be a player");
+            throw new IllegalStateException("activatorInternal must be a player");
         }
     }
 
@@ -200,7 +211,7 @@ public class MapContext {
     }
 
     protected void giveInventory(String item, int count) {
-        activator().A_GiveInventory(item, count);
+        activatorInternal().A_GiveInventory(item, count);
     }
 
     protected int playerClass(int playerNumber) {
@@ -208,12 +219,12 @@ public class MapContext {
     }
 
     protected int playerHealth() {
-        return ((Actor)activator()).getHealth();
+        return ((Actor) activatorInternal()).getHealth();
     }
 
     protected void Thing_ChangeTID(int targetTid, int newTid) {
         simulation
-                .assertedGetThingsByTid(targetTid, activator())
+                .assertedGetThingsByTid(targetTid, activatorInternal())
                 .forEach(t -> t.setTid(newTid));
     }
 
@@ -225,36 +236,38 @@ public class MapContext {
     }
 
     protected int activatorTID() {
-        return activator().getTid();
+        return activatorInternal().getTid();
     }
 
     protected void consoleCommand(String command) {
-        Thing activator = activator();
-        if (activator instanceof PlayerPawn) {
-            throw new UnsupportedOperationException("TODO");
-        } else {
-            throw new UnsupportedOperationException("Only player as an activator is supported");
-        }
-
+        throw new UnsupportedOperationException("Override this method in your test");
     }
 
     protected boolean setCVarString(String name, String newValue) {
+        setCVarInternal(name, newValue, false);
+        return true;
+    }
+
+    protected void setCVarAsConsole(String name, Object newValue) {
+        setCVarInternal(name, newValue, true);
+    }
+
+    private void setCVarInternal(String name, Object newValue, boolean consoleAccess) {
         Simulation.CVarTypes cVarType = simulation.getCVarType(name);
-        if (!cVarType.isModifiableFromScripts()) {
+        if (!cVarType.isModifiableFromScripts() && !consoleAccess) {
             throw new IllegalArgumentException("CVar is not modifiable from ACS or DECORATE");
         }
 
         if (!cVarType.isPlayerOwned()) {
             simulation.setCVar(name, newValue);
         } else {
-            Thing activator = activator();
+            Thing activator = activatorInternal();
             if (activator instanceof PlayerPawn) {
                 ((PlayerPawn) activator).getPlayer().setCVar(name, newValue);
             } else {
-                throw new IllegalStateException("activator must be a player");
+                throw new IllegalStateException("activatorInternal must be a player");
             }
         }
-        return true;
     }
 
     protected void Thing_Damage2(int tid, int damage, String mod) {
@@ -264,8 +277,8 @@ public class MapContext {
         } catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
             throw new IllegalArgumentException(e);
         }
-        simulation.assertedGetThingsByTid(tid, activator()).forEach(
-                t -> ((Actor)t).damageThing(damage, damageType, activator()));
+        simulation.assertedGetThingsByTid(tid, activatorInternal()).forEach(
+                t -> ((Actor)t).damageThing(damage, damageType, activatorInternal()));
     }
 
     protected void setActivator(int newtid) {
@@ -286,14 +299,14 @@ public class MapContext {
     protected void setActorVelocity(int tid, double velx, double vely, double velz, boolean add, boolean setbob) {
         if (add) throw new UnsupportedOperationException("add is not supported");
         if (setbob) throw new UnsupportedOperationException("setbob is not supported");
-        simulation.assertedGetThingsByTid(tid, activator()).forEach(t -> t.setVelocity(velx, vely, velz));
+        simulation.assertedGetThingsByTid(tid, activatorInternal()).forEach(t -> t.setVelocity(velx, vely, velz));
     }
     protected String getCVarString(String name) {
         return (String) getCVarInternal(name);
     }
 
     protected int getActorProperty(int tid, int which) {
-        List<Thing> things = simulation.assertedGetThingsByTid(tid, activator());
+        List<Thing> things = simulation.assertedGetThingsByTid(tid, activatorInternal());
         if (things.size() != 0) throw new IllegalStateException("Only one thing should be found by given tid");
         return 0;
     }
@@ -358,6 +371,8 @@ public class MapContext {
         MapContext that = this;
         return () -> {
             try {
+                boolean added = executedScripts.add(name);
+                assert added;
                 scriptMethod.setAccessible(true);
                 scriptMethod.invoke(that, args);
             } catch (IllegalAccessException e) {
@@ -369,6 +384,9 @@ public class MapContext {
                 } else {
                     throw new IllegalStateException(e);
                 }
+            } finally {
+                boolean removed = executedScripts.remove(name);
+                assert removed;
             }
         };
     }

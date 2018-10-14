@@ -19,8 +19,8 @@ public class Simulation {
     private final List<MapContext> scriptEventListeners = new ArrayList<>();
 
     private final List<TickThread> tickThreads = Collections.synchronizedList(new ArrayList<>());
-    private final Map<String, CVarTypes> cvarTypes = new HashMap<>();
-    private final Map<String, Object> serverCvarValues = new HashMap<>();
+    private final Map<String, CVarTypes> cvarTypes = Collections.synchronizedMap(new HashMap<>());
+    private final Map<String, Object> serverCvarValues = Collections.synchronizedMap(new HashMap<>());
     private final ClassGetter classGetter = new ClassGetter();
     private final Random randomSource;
 
@@ -129,7 +129,7 @@ public class Simulation {
 
     CVarTypes getCVarType(String name) {
         {
-            assert tickLock.isHeldByCurrentThread();
+            assert tickLock.isHeldByCurrentThread() || tickLock.getHoldCount() == 0;
             CVarTypes cVarType = cvarTypes.get(name);
             if (cVarType == null) throw new IllegalStateException("CVAR was not registered by a test");
             return cVarType;
@@ -171,9 +171,9 @@ public class Simulation {
         }
     }
 
-    void setCVar(String name, String newValue) {
+    public void setCVar(String name, Object newValue) {
         {
-            assert tickLock.isHeldByCurrentThread();
+            assert tickLock.isHeldByCurrentThread() || tickLock.getHoldCount() == 0;
             if (getCVarType(name).isPlayerOwned()) throw new IllegalArgumentException("CVAR is not a server one");
             serverCvarValues.put(name, newValue);
         }
@@ -224,52 +224,56 @@ public class Simulation {
         return 0;
     }
 
-    public void runTicks(int ticks) throws TimeoutException, InterruptedException {
-        for (int i = 0; i < ticks; i++) {
-            {
-                assert tickLock.getHoldCount() == 0;
+    public void runTicks(int ticks) {
+        try {
+            for (int i = 0; i < ticks; i++) {
+                {
+                    assert tickLock.getHoldCount() == 0;
 
-                tickLock.lock();
-                try {
-                    scriptEventListeners
-                            .stream()
-                            .flatMap(listener -> listener.createInitRunnables().stream())
-                            .forEach(runnable -> {
-                                TickThread thread = new TickThread(tickLock, runnable);
-                                thread.start();
-                                tickThreads.add(thread);
-                            });
-                } finally {
-                    tickLock.unlock();
-                }
-
-                synchronized (scheduledRunnables) {
-                    while (!scheduledRunnables.isEmpty()) {
-                        Runnable runnable = scheduledRunnables.remove(randomSource.nextInt(scheduledRunnables.size()));
-                        TickThread thread = new TickThread(tickLock, runnable);
-                        thread.start();
-                        tickThreads.add(thread);
+                    tickLock.lock();
+                    try {
+                        scriptEventListeners
+                                .stream()
+                                .flatMap(listener -> listener.createInitRunnables().stream())
+                                .forEach(runnable -> {
+                                    TickThread thread = new TickThread(tickLock, runnable);
+                                    thread.start();
+                                    tickThreads.add(thread);
+                                });
+                    } finally {
+                        tickLock.unlock();
                     }
-                }
 
-                synchronized (tickThreads) {
-                    List<TickThread> newThreads = new ArrayList<>();
-                    while (!tickThreads.isEmpty()) {
-                        TickThread thread = tickThreads.remove(0);
-                        if (!thread.tryJoin()) {
-                            newThreads.add(thread);
+                    synchronized (scheduledRunnables) {
+                        while (!scheduledRunnables.isEmpty()) {
+                            Runnable runnable = scheduledRunnables.remove(randomSource.nextInt(scheduledRunnables.size()));
+                            TickThread thread = new TickThread(tickLock, runnable);
+                            thread.start();
+                            tickThreads.add(thread);
                         }
                     }
-                    tickThreads.addAll(newThreads);
-                }
 
-                tickLock.lock();
-                try {
-                    this.tick += 1;
-                } finally {
-                    tickLock.unlock();
+                    synchronized (tickThreads) {
+                        List<TickThread> newThreads = new ArrayList<>();
+                        while (!tickThreads.isEmpty()) {
+                            TickThread thread = tickThreads.remove(0);
+                            if (!thread.tryJoin()) {
+                                newThreads.add(thread);
+                            }
+                        }
+                        tickThreads.addAll(newThreads);
+                    }
+
+                    tickLock.lock();
+                    try {
+                        this.tick += 1;
+                    } finally {
+                        tickLock.unlock();
+                    }
                 }
             }
+        } catch (InterruptedException | TimeoutException e) {
+            throw new RuntimeException(e);
         }
     }
 
@@ -277,7 +281,7 @@ public class Simulation {
         return classGetter.forSimpleName(className);
     }
 
-    void withTickLock(Runnable runnable) {
+    public void withTickLock(Runnable runnable) {
         tickLock.lock();
         try {
             runnable.run();
@@ -294,7 +298,11 @@ public class Simulation {
         assert tickLock.isHeldByCurrentThread();
     }
 
-    enum CVarTypes {
+    public void registerCVar(String name, CVarTypes cvarType) {
+        this.cvarTypes.put(name, cvarType);
+    }
+
+    public enum CVarTypes {
         USER(false, true),
         USER_CUSTOM(true, true),
         SERVER(false, false),

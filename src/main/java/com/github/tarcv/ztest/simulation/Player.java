@@ -2,6 +2,7 @@ package com.github.tarcv.ztest.simulation;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.github.tarcv.ztest.simulation.Constants.PROP_FROZEN;
 import static com.github.tarcv.ztest.simulation.Constants.PROP_TOTALLYFROZEN;
@@ -98,15 +99,23 @@ public class Player implements Owner {
         }
     }
 
-    int getPawnClass() {
+    public int getPawnClass() {
         return pawn.getClassIndex();
     }
 
-    void setCVar(String name, String newValue) {
+    void setCVar(String name, Object newValue) {
         simulation.assertTickLockHeld(); {
             if (!simulation.getCVarType(name).isPlayerOwned()) throw new IllegalArgumentException("CVAR is not a user one");
             userCvarValues.put(name, newValue);
         }
 
+    }
+
+    public int getHealth() {
+        AtomicInteger health = new AtomicInteger();
+        simulation.withTickLock(() -> {
+            health.set(pawn.getHealth());
+        });
+        return health.get();
     }
 }
