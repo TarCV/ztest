@@ -229,6 +229,20 @@ public class Simulation {
             {
                 assert tickLock.getHoldCount() == 0;
 
+                tickLock.lock();
+                try {
+                    scriptEventListeners
+                            .stream()
+                            .flatMap(listener -> listener.createInitRunnables().stream())
+                            .forEach(runnable -> {
+                                TickThread thread = new TickThread(tickLock, runnable);
+                                thread.start();
+                                tickThreads.add(thread);
+                            });
+                } finally {
+                    tickLock.unlock();
+                }
+
                 synchronized (scheduledRunnables) {
                     while (!scheduledRunnables.isEmpty()) {
                         Runnable runnable = scheduledRunnables.remove(randomSource.nextInt(scheduledRunnables.size()));

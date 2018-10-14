@@ -5,6 +5,7 @@ import com.sun.istack.internal.Nullable;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import static com.github.tarcv.ztest.simulation.MapContext.ScriptType.*;
 
@@ -304,10 +305,10 @@ public class MapContext {
         scheduleScriptsByType(ENTER, player);
     }
 
-    private void scheduleScriptsByType(ScriptType enter, Thing activator) {
+    private void scheduleScriptsByType(ScriptType type, Thing activator) {
         synchronized (scripts) {
             scripts.forEach(script -> {
-                if (script.type.contains(enter)) {
+                if (script.type.contains(type)) {
                     MapContext mapContext = ctor.create(simulation, rootContext);
                     mapContext.context.setActivator(activator);
                     mapContext.scheduleScriptOnThisContext(script.name);
@@ -338,24 +339,38 @@ public class MapContext {
         scheduleScriptsByType(OPEN, null);
     }
 
+    List<Runnable> createInitRunnables() {
+        synchronized (scripts) {
+            return scripts.stream()
+                    .filter(script -> script.type.contains(OPEN))
+                    .map(script -> getScriptRunnable(script.name, new Object[0]))
+                    .collect(Collectors.toList());
+        }
+    }
+
     private void scheduleScriptOnThisContext(String name, Object... args) {
+        Runnable scriptRunnable = getScriptRunnable(name, args);
+        simulation.scheduleOnNextTic(scriptRunnable);
+    }
+
+    private Runnable getScriptRunnable(String name, Object[] args) {
         Method scriptMethod = findScriptMethodByName(name);
         MapContext that = this;
-        simulation.scheduleOnNextTic(() -> {
-                try {
-                    scriptMethod.setAccessible(true);
-                    scriptMethod.invoke(that, args);
-                } catch (IllegalAccessException e) {
+        return () -> {
+            try {
+                scriptMethod.setAccessible(true);
+                scriptMethod.invoke(that, args);
+            } catch (IllegalAccessException e) {
+                throw new IllegalStateException(e);
+            } catch (InvocationTargetException e) {
+                Throwable targetException = e.getTargetException();
+                if (targetException instanceof TerminateScriptException) {
+                    // workaround to emulate `terminate` statement
+                } else {
                     throw new IllegalStateException(e);
-                } catch (InvocationTargetException e) {
-                    Throwable targetException = e.getTargetException();
-                    if (targetException instanceof TerminateScriptException) {
-                        // workaround to emulate `terminate` statement
-                    } else {
-                        throw new IllegalStateException(e);
-                    }
                 }
-        });
+            }
+        };
     }
 
     private Method findScriptMethodByName(String name) {
