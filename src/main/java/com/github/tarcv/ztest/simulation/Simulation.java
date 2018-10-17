@@ -213,7 +213,7 @@ public class Simulation {
         return 0;
     }
 
-    public void runAtLeastTicks(int seconds, Predicate<List<String>> isIdle) {
+    public void runAtLeastTicks(int ticks, Predicate<List<String>> isIdle) {
         try {
             if (executor.getCurrentTick() == -1) {
                 synchronized (scriptEventListeners) {
@@ -225,17 +225,17 @@ public class Simulation {
             }
 
             boolean isSimIdle = false;
-            for (int i = 0; i < seconds || !isSimIdle; i++) {
-                withTickLock(() -> {
-                    int currentTick = this.getCurrentTick();
-                    double second = currentTick / 35.0;
-                    System.out.printf("-- Tick %d | %.2f second in the sim ---------------------%n",
-                            currentTick, second);
-                });
-
-                for (int j = 0; j < 17; j++) {
-                    executor.executeTick();
+            for (int i = 0; i < ticks || !isSimIdle; i++) {
+                if (i % 35 == 0) {
+                    withTickLock(() -> {
+                        int currentTick = this.getCurrentTick();
+                        double second = currentTick / 35.0;
+                        System.out.printf("-- Tick %d | %.2f second in the sim ---------------------%n",
+                                currentTick, second);
+                    });
                 }
+
+                executor.executeTick();
                 isSimIdle = isIdle.test(executor.getActiveRunnables());
             }
         } catch (InterruptedException | TimeoutException e) {

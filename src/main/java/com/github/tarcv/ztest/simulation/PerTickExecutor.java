@@ -12,6 +12,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Supplier;
 
+import static java.lang.Thread.MIN_PRIORITY;
 import static java.lang.Thread.State.RUNNABLE;
 import static java.lang.Thread.State.TERMINATED;
 
@@ -20,6 +21,7 @@ class PerTickExecutor {
     private final Random randomSource;
 
     private final Thread executorThread = Thread.currentThread();
+    private final int defaultPriority = executorThread.getPriority();
 
     private final List<ThreadContextImpl> delayedTickThreads = Collections.synchronizedList(new ArrayList<>());
 
@@ -42,10 +44,10 @@ class PerTickExecutor {
         scheduledRunnables.add(runnable);
     }
 
-    void executeTick() throws TimeoutException, InterruptedException {
+    int executeTick() throws TimeoutException, InterruptedException {
         assert getCurrentTick() >= 0;
 
-        executeRunnablesInternal(scheduledRunnables);
+        return executeRunnablesInternal(scheduledRunnables);
     }
 
     void executeTickWithRunnables(List<NamedRunnable> namedRunnable) throws TimeoutException, InterruptedException {
@@ -55,12 +57,10 @@ class PerTickExecutor {
         executeRunnablesInternal(copy);
     }
 
-    private void executeRunnablesInternal(List<NamedRunnable> newRunnables) throws InterruptedException, TimeoutException {
+    private int executeRunnablesInternal(List<NamedRunnable> newRunnables) throws InterruptedException, TimeoutException {
         assert Thread.currentThread() == executorThread;
 
-        withTickLock(() -> {
-            ++tick;
-        });
+        int currentTick = withTickLock(() -> ++tick);
 
         synchronized (newRunnables) {
             while (!newRunnables.isEmpty()) {
@@ -71,16 +71,17 @@ class PerTickExecutor {
             }
         }
 
-        List<ThreadContextImpl> threadsLeft = new ArrayList<>();
 
         synchronized (delayedTickThreads) {
             waitTillNothingExecutes();
+            List<ThreadContextImpl> threadsLeft = new ArrayList<>();
 
             for (ThreadContextImpl thread : delayedTickThreads) {
                 assert thread.isDelayed();
-                thread.tryContinue();
-
-                boolean finished = thread.tryJoin();
+                boolean finished = false;
+                if (thread.tryContinue()) {
+                    finished = thread.tryJoin();
+                }
                 if (!finished) {
                     threadsLeft.add(thread);
                 }
@@ -90,6 +91,8 @@ class PerTickExecutor {
             delayedTickThreads.clear();
             delayedTickThreads.addAll(threadsLeft);
         }
+
+        return currentTick;
     }
 
     private void waitTillNothingExecutes() {
@@ -192,6 +195,7 @@ class PerTickExecutor {
 
             try {
                 assert !tickDataLock.isHeldByCurrentThread();
+                thread.setPriority(MIN_PRIORITY);
                 delayContext.get().await();
             } finally {
                 tickDataLock.lock();
@@ -200,12 +204,17 @@ class PerTickExecutor {
         }
 
         // executed by PerTickExecutor
-        void tryContinue() {
+        boolean tryContinue() {
             assert Thread.currentThread() == executorThread;
 
             delayLock.readLock().lock();
             try {
-                delayContext.get().tryContinue();
+                boolean resumed = delayContext.get().tryContinue();
+                if (resumed) {
+//                    System.out.println(runnableName + "- resumed");
+                    thread.setPriority(defaultPriority);
+                }
+                return resumed;
             } finally {
                 delayLock.readLock().unlock();
             }
@@ -255,20 +264,23 @@ class PerTickExecutor {
             this.untilPredicate = untilPredicate;
         }
 
-        void tryContinue() {
+        boolean tryContinue() {
             assert Thread.currentThread() == executorThread;
 
             if (latch.getCount() > 0) {
-                withTickLock(() -> {
+                return withTickLock(() -> {
                     try {
                         if (untilPredicate.get()) {
                             latch.countDown();
+                            return true;
                         }
+                        return false;
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
                 });
             }
+            throw new IllegalStateException();
         }
 
         private boolean isWaiting() {

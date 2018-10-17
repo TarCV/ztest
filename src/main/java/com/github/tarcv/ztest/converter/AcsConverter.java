@@ -1,6 +1,6 @@
 package com.github.tarcv.ztest.converter;
 
-import com.github.tarcv.ztest.converter.ConvertUtils.DataPair;
+import com.github.tarcv.ztest.converter.ConvertUtils.*;
 
 import java.io.IOException;
 import java.io.Writer;
@@ -11,9 +11,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static com.github.tarcv.ztest.converter.ConvertUtils.removeByPattern;
-import static com.github.tarcv.ztest.converter.ConvertUtils.tryParseAndRemove;
-import static com.github.tarcv.ztest.converter.ConvertUtils.tryReplace;
+import static com.github.tarcv.ztest.converter.ConvertUtils.*;
 import static java.util.regex.Pattern.CASE_INSENSITIVE;
 
 public class AcsConverter {
@@ -117,14 +115,13 @@ public class AcsConverter {
 
         dataPair = tryReplace(dataPair, var, varGroups -> {
             String type = convertType(varGroups.group(1));
-            String itemType = type;
             String name = varGroups.group(2).trim();
             String value = varGroups.group(3);
             boolean isArray = name.trim().endsWith("]");
             boolean hasValue = value != null && !value.isEmpty();
             String sizePart = "";
 
-            mapVars.append(itemType);
+            mapVars.append(type);
 
             if (isArray) {
                 int sizeStart = name.indexOf('[');
@@ -145,7 +142,7 @@ public class AcsConverter {
                 if (hasValue) {
                     mapVars.append(value);
                 } else if (isArray) {
-                    mapVars.append("new ").append(itemType).append(sizePart);
+                    mapVars.append("new ").append(type).append(sizePart);
                 }
             }
             mapVars.append(";").append(System.lineSeparator());
