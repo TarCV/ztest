@@ -2,6 +2,7 @@ package com.github.tarcv.ztest.simulation;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.github.tarcv.ztest.simulation.Constants.PROP_FROZEN;
@@ -19,6 +20,7 @@ public class Player implements Owner {
     private boolean frozen = false;
     private boolean totallyFrozen = false;
     private final Map<String, Object> userCvarValues = new HashMap<>();
+    private int buttonsDown = 0;
 
     Player(Simulation simulation, String name, int initialHealth, int initialArmor, boolean isBot) {
         this.simulation = simulation;
@@ -42,9 +44,11 @@ public class Player implements Owner {
         simulation.withTickLock(() -> {
             if (pawn == null) {
                 this.pawn = createPawn();
+                System.out.printf("- %s joined the game as %d%n", name, this.pawn.getClassIndex());
                 simulation.onPlayerJoined(pawn);
             } else if (pawn.getHealth() <= 0) {
                 this.pawn = createPawn();
+                System.out.printf("- %s respawned as %d%n", name, this.pawn.getClassIndex());
                 simulation.onPlayerRespawned(pawn);
             }
         });
@@ -86,8 +90,10 @@ public class Player implements Owner {
         }
     }
 
-    boolean isBot() {
-        return isBot;
+    public boolean isBot() {
+        AtomicBoolean result = new AtomicBoolean();
+        simulation.withTickLock(() -> result.set(isBot));
+        return result.get();
     }
 
     int getInfo(int whichInfo) {
@@ -103,19 +109,38 @@ public class Player implements Owner {
         return pawn.getClassIndex();
     }
 
-    void setCVar(String name, Object newValue) {
-        simulation.assertTickLockHeld(); {
+    public void setCVar(String name, Object newValue) {
+        simulation.withTickLock(() -> {
             if (!simulation.getCVarType(name).isPlayerOwned()) throw new IllegalArgumentException("CVAR is not a user one");
             userCvarValues.put(name, newValue);
-        }
-
+        });
     }
 
     public int getHealth() {
         AtomicInteger health = new AtomicInteger();
-        simulation.withTickLock(() -> {
-            health.set(pawn.getHealth());
-        });
+        simulation.withTickLock(() -> health.set(pawn.getHealth()));
         return health.get();
+    }
+
+    public void downKey(int key) {
+        simulation.withTickLock(() -> buttonsDown = buttonsDown | key);
+    }
+
+    public void upKey(int key) {
+        simulation.withTickLock(() -> buttonsDown = buttonsDown & (~key));
+    }
+
+    int getButtonState() {
+        return buttonsDown;
+    }
+
+    PlayerPawn getPawn() {
+        return pawn;
+    }
+
+    public void fragOther(Player victim) {
+        simulation.withTickLock(() -> {
+            victim.pawn.damageThing(999, new DamageFrag(), pawn);
+        });
     }
 }

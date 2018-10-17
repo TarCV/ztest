@@ -1,8 +1,6 @@
 package com.github.tarcv.ztest.simulation;
 
 public abstract class CustomInventory extends Thing {
-    private volatile Thing owner = null;
-
     protected CustomInventory(Simulation simulation) {
         super(simulation);
     }
@@ -12,8 +10,18 @@ public abstract class CustomInventory extends Thing {
     }
 
     final void pickupBy(Thing owner) {
-        this.owner = owner;
         this.setActivator(owner);
-        simulation.scheduleOnNextTic(this::Pickup);
+        simulation.scheduleOnNextTic(new NamedRunnable() {
+            @Override
+            public String name() {
+                CustomInventory customInventory = CustomInventory.this;
+                return customInventory.getClass().getSimpleName() + "@" + System.identityHashCode(customInventory);
+            }
+
+            @Override
+            public void run() {
+                Pickup();
+            }
+        });
     }
 }

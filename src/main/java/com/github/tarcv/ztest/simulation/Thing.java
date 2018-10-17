@@ -5,6 +5,8 @@ import java.lang.reflect.InvocationTargetException;
 import java.util.*;
 import java.util.function.Consumer;
 
+import static com.github.tarcv.ztest.simulation.Simulation.getConstructor;
+
 public class Thing {
     private final Set<String> flags = Collections.synchronizedSet(new HashSet<>());
     private final Map<String, Object> properties = Collections.synchronizedMap(new HashMap<>());
@@ -45,7 +47,7 @@ public class Thing {
         return flags.contains(flag.toUpperCase());
     }
 
-    protected final void setProperty(String name, Object value) {
+    protected void setProperty(String name, Object value) {
         verifyPropertyNameAndValue(name, value);
         properties.put(name, value);
     }
@@ -96,8 +98,7 @@ public class Thing {
     void giveInventory(String className, int count) {
         try {
             Class<?> aClass = simulation.classForSimpleName(className);
-            Constructor<?> constructor = aClass.getDeclaredConstructor(Simulation.class);
-            constructor.setAccessible(true);
+            Constructor<?> constructor = getConstructor(aClass);
             for (int i = 0; i < count; i++) {
                 CustomInventory item = (CustomInventory) constructor.newInstance(simulation);
                 activator.pickItem(item);
@@ -198,6 +199,14 @@ public class Thing {
         this.velx = velx;
         this.vely = vely;
         this.velz = velz;
+    }
+
+    protected Object getProperty(String name) {
+        Object value = properties.get(name);
+        if (value == null) {
+            throw new IllegalStateException(String.format("Property %s was not set", name));
+        }
+        return value;
     }
 
     private static class State {

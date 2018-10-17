@@ -11,6 +11,6 @@ public class DamageType {
     }
 
     boolean hasFlag(String flag) {
-        return flags.contains(flag);
+        return flags.contains(flag.toUpperCase());
     }
 }

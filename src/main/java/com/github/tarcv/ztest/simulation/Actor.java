@@ -3,12 +3,51 @@ package com.github.tarcv.ztest.simulation;
 public abstract class Actor extends Thing {
     public Actor(Simulation simulation) {
         super(simulation);
-        this.A_GiveInventory("Health", 100);
     }
 
     int getHealth() {
         return checkInventory("Health");
     }
+
+    @Override
+    protected void setProperty(String name, Object value) {
+        if (name.equalsIgnoreCase("health")) {
+            addHealth(getHealth() - ((Integer)value), getActivator());
+        } else {
+            super.setProperty(name, value);
+        }
+    }
+
+    @Override
+    protected Object getProperty(String name) {
+        if (name.equalsIgnoreCase("health")) {
+            return getHealth();
+        } else {
+            return super.getProperty(name);
+        }
+    }
+
+    @Override
+    protected void verifyPropertyNameAndValue(String name, Object value) {
+        switch (name) {
+            case "Health":
+            case "Radius":
+            case "Height":
+            case "Mass":
+            case "Speed":
+                if (!(value instanceof Number))
+                    throw new IllegalArgumentException("The value should be a number");
+                return;
+            case "Obituary":
+                if (!(value instanceof String))
+                    throw new IllegalArgumentException("The value should be a string");
+                return;
+            default:
+                super.verifyPropertyNameAndValue(name, value);
+        }
+    }
+
+
 
     void damageThing(int damage, DamageType damageType, Thing byWhom) {
         if (!damageType.hasFlag("noarmor")) throw new UnsupportedOperationException("Only noarmor damage type is supported");

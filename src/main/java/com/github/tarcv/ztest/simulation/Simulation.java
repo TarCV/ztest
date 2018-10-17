@@ -1,55 +1,44 @@
 package com.github.tarcv.ztest.simulation;
 
-import net.jcip.annotations.GuardedBy;
-
+import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.util.*;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static com.github.tarcv.ztest.simulation.Simulation.CVarTypes.USER;
 
 public class Simulation {
+    private final Random randomSource;
+
     private final Player[] players = new Player[32];
     private final List<Thing> things = new ArrayList<>();
-    private final List<MapContext> scriptEventListeners = new ArrayList<>();
-
-    private final List<TickThread> tickThreads = Collections.synchronizedList(new ArrayList<>());
+    private final List<ScriptContext> scriptEventListeners = Collections.synchronizedList(new ArrayList<>());
+    private final PerTickExecutor executor;
     private final Map<String, CVarTypes> cvarTypes = Collections.synchronizedMap(new HashMap<>());
     private final Map<String, Object> serverCvarValues = Collections.synchronizedMap(new HashMap<>());
     private final ClassGetter classGetter = new ClassGetter();
-    private final Random randomSource;
-
-    private final ReentrantLock tickLock = new ReentrantLock();
-
-    private final List<Runnable> scheduledRunnables = Collections.synchronizedList(new ArrayList<>());
-
-    @GuardedBy("tickLock")
-    private int tick = 0;
 
     public Simulation(long seed) {
         this.randomSource = new Random(seed);
+        this.executor = new PerTickExecutor(randomSource);
         this.cvarTypes.put("playerclass", USER);
     }
 
     public Player addPlayer(String name, int health, int armor, boolean isBot) {
-        tickLock.lock();
-        try {
+        return executor.withTickLock(() -> {
             Player player = new Player(this, name, health, armor, isBot);
             addPlayerToArray(player);
             return player;
-        } finally {
-            tickLock.unlock();
-        }
+        });
     }
 
     private void addPlayerToArray(Player player) {
         {
-            assert tickLock.isHeldByCurrentThread();
+            executor.assertTickLockHeld();
             for (int i = 0; i < players.length; i++) {
                 if (players[i] == null) {
                     players[i] = player;
@@ -60,15 +49,20 @@ public class Simulation {
         }
     }
 
-    void registerScriptEventsListener(MapContext mapContext) {
-        if (getCurrentTic() != 0)   throw new IllegalStateException("Can only be called during the very first tick");
-        scriptEventListeners.add(mapContext);
-        mapContext.onMapLoaded();
+    public void registerScriptEventsListener(ScriptContext scriptContext) {
+        int currentTic = getCurrentTick();
+        if (currentTic != -1)   throw new IllegalStateException(
+                String.format("Can only be called before the very first tick. Got: %d", currentTic));
+        scriptContext.assertIsMainScriptContext();
+
+        executor.withTickLock(() -> {
+            scriptEventListeners.add(scriptContext);
+        });
     }
 
-    public void registerThing(Thing thing) {
+    void registerThing(Thing thing) {
         {
-            assert tickLock.isHeldByCurrentThread();
+            executor.assertTickLockHeld();
             things.add(thing);
         }
     }
@@ -81,18 +75,13 @@ public class Simulation {
         fireScriptEventListeners(listener -> listener.onPlayerRespawned(player));
     }
 
-    void scheduleOnNextTic(Runnable runnable) {
-        tickLock.lock();
-        try {
-            scheduledRunnables.add(runnable);
-        } finally {
-            tickLock.unlock();
-        }
+    void scheduleOnNextTic(NamedRunnable runnable) {
+        executor.scheduleRunnable(runnable);
     }
 
     List<Player> getPlayers() {
         {
-            assert tickLock.isHeldByCurrentThread();
+            executor.assertTickLockHeld();
             return Stream.of(players)
                     .filter(Objects::nonNull)
                     .collect(Collectors.toList());
@@ -101,7 +90,7 @@ public class Simulation {
 
     Player getPlayerByIndex(int playerNumber) {
         {
-            assert tickLock.isHeldByCurrentThread();
+            executor.assertTickLockHeld();
             Player player = players[playerNumber];
             if (player == null) throw new IllegalStateException("Player with this number is not present");
             return player;
@@ -110,7 +99,7 @@ public class Simulation {
 
     int getPlayerIndex(Player player) {
         {
-            assert tickLock.isHeldByCurrentThread();
+            executor.assertTickLockHeld();
             for (int i = 0; i < players.length; i++) {
                 if (players[i] == player) return i;
             }
@@ -118,27 +107,21 @@ public class Simulation {
         throw new IllegalStateException("Player is not present in the simulation");
     }
 
-    int getCurrentTic() {
-        tickLock.lock();
-        try {
-            return tick;
-        } finally {
-            tickLock.unlock();
-        }
+    int getCurrentTick() {
+        return executor.getCurrentTick();
     }
 
     CVarTypes getCVarType(String name) {
-        {
-            assert tickLock.isHeldByCurrentThread() || tickLock.getHoldCount() == 0;
+        return executor.withTickLock(() -> {
             CVarTypes cVarType = cvarTypes.get(name);
             if (cVarType == null) throw new IllegalStateException("CVAR was not registered by a test");
             return cVarType;
-        }
+        });
     }
 
     Object getCVarInternal(String name) {
         {
-            assert tickLock.isHeldByCurrentThread();
+            executor.assertTickLockHeld();
             if (getCVarType(name).isPlayerOwned()) throw new IllegalArgumentException("CVAR is not a server one");
             return serverCvarValues.get(name);
         }
@@ -159,7 +142,7 @@ public class Simulation {
     private List<Thing> getThingsByTid(int tid, Thing activator) {
         if (tid != 0) {
             {
-                assert tickLock.isHeldByCurrentThread();
+                executor.assertTickLockHeld();
                 return things.stream()
                         .filter(t -> t.getTid() == tid)
                         .collect(Collectors.toList());
@@ -172,37 +155,43 @@ public class Simulation {
     }
 
     public void setCVar(String name, Object newValue) {
-        {
-            assert tickLock.isHeldByCurrentThread() || tickLock.getHoldCount() == 0;
+        executor.withTickLock(() -> {
             if (getCVarType(name).isPlayerOwned()) throw new IllegalArgumentException("CVAR is not a server one");
             serverCvarValues.put(name, newValue);
-        }
+        });
     }
 
     void onDeath(Actor actor, Thing killedBy) {
         // TODO: play Death or XDeath animation
         if (actor instanceof PlayerPawn) {
             {
-                assert tickLock.isHeldByCurrentThread();
+                executor.assertTickLockHeld();
                 PlayerPawn playerPawn = (PlayerPawn) actor;
                 fireScriptEventListeners(listener -> listener.onPlayerKilled(playerPawn));
             }
         }
     }
 
-    private void fireScriptEventListeners(Consumer<MapContext> mapContextConsumer) {
-        {
-            assert tickLock.isHeldByCurrentThread();
-            scriptEventListeners.forEach(mapContextConsumer);
-        }
+    private void fireScriptEventListeners(Consumer<ScriptContext> mapContextConsumer) {
+        executor.withTickLock(() -> {
+            synchronized (scriptEventListeners) {
+                scriptEventListeners.forEach(mapContextConsumer);
+            }
+        });
+    }
+
+    static Constructor<?> getConstructor(Class<?> aClass) throws NoSuchMethodException {
+        Constructor<?> constructor = aClass.getDeclaredConstructor(Simulation.class);
+        constructor.setAccessible(true);
+        return constructor;
     }
 
     void createThing(String type, double x, double y, int z, int newtid, int angle) {
         {
-            assert tickLock.isHeldByCurrentThread();
+            executor.assertTickLockHeld();
             Thing newThing;
             try {
-                newThing = (Thing) classForSimpleName(type).getConstructor(Simulation.class).newInstance(this);
+                newThing = (Thing) getConstructor(classForSimpleName(type)).newInstance(this);
             } catch (InstantiationException | IllegalAccessException | NoSuchMethodException | InvocationTargetException | ClassNotFoundException e) {
                 throw new IllegalStateException(e);
             }
@@ -224,53 +213,30 @@ public class Simulation {
         return 0;
     }
 
-    public void runTicks(int ticks) {
+    public void runAtLeastTicks(int seconds, Predicate<List<String>> isIdle) {
         try {
-            for (int i = 0; i < ticks; i++) {
-                {
-                    assert tickLock.getHoldCount() == 0;
-
-                    tickLock.lock();
-                    try {
-                        scriptEventListeners
-                                .stream()
-                                .flatMap(listener -> listener.createInitRunnables().stream())
-                                .forEach(runnable -> {
-                                    TickThread thread = new TickThread(tickLock, runnable);
-                                    thread.start();
-                                    tickThreads.add(thread);
-                                });
-                    } finally {
-                        tickLock.unlock();
-                    }
-
-                    synchronized (scheduledRunnables) {
-                        while (!scheduledRunnables.isEmpty()) {
-                            Runnable runnable = scheduledRunnables.remove(randomSource.nextInt(scheduledRunnables.size()));
-                            TickThread thread = new TickThread(tickLock, runnable);
-                            thread.start();
-                            tickThreads.add(thread);
-                        }
-                    }
-
-                    synchronized (tickThreads) {
-                        List<TickThread> newThreads = new ArrayList<>();
-                        while (!tickThreads.isEmpty()) {
-                            TickThread thread = tickThreads.remove(0);
-                            if (!thread.tryJoin()) {
-                                newThreads.add(thread);
-                            }
-                        }
-                        tickThreads.addAll(newThreads);
-                    }
-
-                    tickLock.lock();
-                    try {
-                        this.tick += 1;
-                    } finally {
-                        tickLock.unlock();
-                    }
+            if (executor.getCurrentTick() == -1) {
+                synchronized (scriptEventListeners) {
+                    List<NamedRunnable> openRunnables = scriptEventListeners.stream()
+                            .flatMap(listener -> listener.createInitRunnables().stream())
+                            .collect(Collectors.toList());
+                    executor.executeTickWithRunnables(openRunnables);
                 }
+            }
+
+            boolean isSimIdle = false;
+            for (int i = 0; i < seconds || !isSimIdle; i++) {
+                withTickLock(() -> {
+                    int currentTick = this.getCurrentTick();
+                    double second = currentTick / 35.0;
+                    System.out.printf("-- Tick %d | %.2f second in the sim ---------------------%n",
+                            currentTick, second);
+                });
+
+                for (int j = 0; j < 17; j++) {
+                    executor.executeTick();
+                }
+                isSimIdle = isIdle.test(executor.getActiveRunnables());
             }
         } catch (InterruptedException | TimeoutException e) {
             throw new RuntimeException(e);
@@ -281,25 +247,20 @@ public class Simulation {
         return classGetter.forSimpleName(className);
     }
 
-    public void withTickLock(Runnable runnable) {
-        tickLock.lock();
-        try {
-            runnable.run();
-        } finally {
-            tickLock.unlock();
-        }
-    }
-
-    static DelayableContext getThreadContext() {
-        return ((TickThread) Thread.currentThread()).context;
-    }
-
-    void assertTickLockHeld() {
-        assert tickLock.isHeldByCurrentThread();
-    }
-
     public void registerCVar(String name, CVarTypes cvarType) {
         this.cvarTypes.put(name, cvarType);
+    }
+
+    ThreadContext getThreadContext() {
+        return executor.getThreadContext();
+    }
+
+    public void withTickLock(Runnable runnable) {
+        executor.withTickLock(runnable);
+    }
+
+    public void assertTickLockHeld() {
+        executor.assertTickLockHeld();
     }
 
     public enum CVarTypes {
@@ -322,72 +283,6 @@ public class Simulation {
 
         boolean isPlayerOwned() {
             return this.isPlayerOwned;
-        }
-    }
-
-    private static class TickThread extends Thread {
-        private final DelayableContext context;
-
-        private TickThread(ReentrantLock globalLock, Runnable runnable) {
-            super(() -> {
-                try {
-                    globalLock.lock();
-                    runnable.run();
-                } finally {
-                    assert globalLock.isHeldByCurrentThread();
-                    globalLock.unlock();
-                }
-            }, "Scheduled actions thread");
-            this.context = new DelayableContext(globalLock);
-            this.setDaemon(true);
-        }
-
-        private boolean isDelayed() {
-            return context.delayed.get();
-        }
-
-        private boolean tryJoin() throws InterruptedException, TimeoutException {
-            this.join(1000 / 35 * 5);
-            if (this.isAlive()) {
-                boolean isDelayed = context.delayed.get();
-                if (isDelayed) {
-                    return false;
-                } else {
-                    throw new TimeoutException("Some thread is run-away. Probably you forgot to add 'delay'?");
-                }
-            } else {
-                return true;
-            }
-        }
-    }
-
-    static class DelayableContext {
-        private final ReentrantLock tickLock;
-
-        @GuardedBy("tickLock")
-        private AtomicBoolean delayed = new AtomicBoolean();
-
-        DelayableContext(ReentrantLock tickLock) {
-            this.tickLock = tickLock;
-        }
-
-        /*
-            delayed -> delayed          lock count doesn't change (should be 0)
-            delayed -> not delayed      lock count increments by 1 (becomes 1)
-            not delayed -> delayed      lock count decrements by 1 (becomes 0
-            not delayed -> not delayed  lock count doesn't change (should be 1)
-         */
-        void setDelayed(boolean value) {
-            tickLock.lock();
-            boolean wasDelayed = delayed.get();
-            delayed.set(value);
-            if (wasDelayed && !value) {
-                tickLock.lock();
-            } else if (!wasDelayed && value) {
-                tickLock.unlock();
-            }
-            tickLock.unlock();
-            assert tickLock.isHeldByCurrentThread() != value;
         }
     }
 }
