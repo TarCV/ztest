@@ -1,66 +1,87 @@
 package com.github.tarcv.ztest.simulation;
 
-import net.jcip.annotations.GuardedBy;
+import co.paralleluniverse.fibers.Fiber;
+import co.paralleluniverse.fibers.FiberExecutorScheduler;
+import co.paralleluniverse.fibers.FiberScheduler;
+import co.paralleluniverse.fibers.SuspendExecution;
+import co.paralleluniverse.strands.SuspendableRunnable;
+import co.paralleluniverse.strands.concurrent.CountDownLatch;
+import com.github.tarcv.ztest.simulation.ScriptContext.NamedRunnable;
 
-import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.concurrent.CountDownLatch;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Random;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
-import static java.lang.Thread.MIN_PRIORITY;
-import static java.lang.Thread.State.RUNNABLE;
-import static java.lang.Thread.State.TERMINATED;
+import static co.paralleluniverse.strands.Strand.State.*;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 class PerTickExecutor {
-    public static final int JOIN_TIMEOUT_MILLIS = 1000 / 35 * 5;
+    private static final int JOIN_TIMEOUT_MILLIS = 1000 / 35 * 10;
     private final Random randomSource;
 
     private final Thread executorThread = Thread.currentThread();
-    private final int defaultPriority = executorThread.getPriority();
+    private final FiberScheduler scheduler =
+            new FiberExecutorScheduler("Tick scheduler", Executors.newSingleThreadExecutor());
+    private final AtomicReference<Thread> fiberThread = new AtomicReference<>();
 
     private final List<ThreadContextImpl> delayedTickThreads = Collections.synchronizedList(new ArrayList<>());
-
     private final List<NamedRunnable> scheduledRunnables = Collections.synchronizedList(new ArrayList<>());
 
-    @GuardedBy("tickDataLock")
-    private int tick = -1;
-
-    private final ReentrantLock tickDataLock = new ReentrantLock();
+    private final ScriptThreadEnforcer<PerTickExecutorData> data = new ScriptThreadEnforcer<PerTickExecutorData>(this, new PerTickExecutorData());
 
     PerTickExecutor(Random randomSource) {
         this.randomSource = randomSource;
     }
 
     ThreadContext getThreadContext() {
-        return ((TickThread)Thread.currentThread()).threadContext.get();
+        return ((TickThread)Fiber.currentFiber()).threadContext.get();
+    }
+
+    void assertIsFiberThread() {
+        Thread actualFiberThread = fiberThread.updateAndGet(thread -> {
+            if (thread == null) {
+                return Thread.currentThread();
+            }
+            return thread;
+        });
+        assert Thread.currentThread() == actualFiberThread;
     }
 
     void scheduleRunnable(NamedRunnable runnable) {
         scheduledRunnables.add(runnable);
     }
 
-    int executeTick() throws TimeoutException, InterruptedException {
+    void executeTick() throws TimeoutException {
         assert getCurrentTick() >= 0;
 
-        return executeRunnablesInternal(scheduledRunnables);
+        executeRunnablesInternal(scheduledRunnables);
     }
 
-    void executeTickWithRunnables(List<NamedRunnable> namedRunnable) throws TimeoutException, InterruptedException {
+    void executeTickWithRunnables(List<NamedRunnable> namedRunnable) throws TimeoutException {
         assert getCurrentTick() == -1 && delayedTickThreads.isEmpty();
 
         ArrayList<NamedRunnable> copy = new ArrayList<>(namedRunnable);
         executeRunnablesInternal(copy);
     }
 
-    private int executeRunnablesInternal(List<NamedRunnable> newRunnables) throws InterruptedException, TimeoutException {
-        assert Thread.currentThread() == executorThread;
+    void executeWithinScriptThread(Runnable runnable) {
+        executeWithinScriptThread(() -> {
+            runnable.run();
+            return null;
+        });
+    }
 
-        int currentTick = withTickLock(() -> ++tick);
+    private void executeRunnablesInternal(List<NamedRunnable> newRunnables) throws TimeoutException {
+        assertIsExecutorThread();
+
+        executeWithinScriptThread(() -> ++data.get().tick);
 
         synchronized (newRunnables) {
             while (!newRunnables.isEmpty()) {
@@ -87,225 +108,202 @@ class PerTickExecutor {
                 }
             }
 
-            assert delayedTickThreads.stream().noneMatch(t -> t.thread.getState() == RUNNABLE);
+            assert delayedTickThreads.stream().noneMatch(t ->
+                    isRunning(t.thread));
             delayedTickThreads.clear();
             delayedTickThreads.addAll(threadsLeft);
         }
 
-        return currentTick;
+    }
+
+    private void assertIsExecutorThread() {
+        assert Thread.currentThread() == executorThread;
+    }
+
+    private static boolean isRunning(TickThread tickThread) {
+        return tickThread.getState() == RUNNING
+        || tickThread.getState() == NEW
+        || tickThread.getState() == STARTED;
     }
 
     private void waitTillNothingExecutes() {
         long startTime = System.nanoTime();
         boolean nothingExecutes = false;
         while (System.nanoTime() - startTime < JOIN_TIMEOUT_MILLIS*1_000_000 && !nothingExecutes) {
-            nothingExecutes = delayedTickThreads.stream().noneMatch(t -> t.thread.getState() == RUNNABLE);
+            nothingExecutes = delayedTickThreads.stream().noneMatch(t -> isRunning(t.thread));
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
         if (!nothingExecutes) {
             throw new IllegalStateException("By this time no scripts or function should be in progress");
         }
     }
 
-    void withTickLock(Runnable runnable) {
-        tickDataLock.lock();
-        try {
-            runnable.run();
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        } finally {
-            tickDataLock.unlock();
+    <T> T executeWithinScriptThread(Supplier<T> callable) {
+        if (Thread.currentThread() == fiberThread.get()) {
+            return callable.get();
+        } else {
+            waitTillNothingExecutes();
+            Fiber<T> thread = new Fiber<>("Between ticks execution", scheduler, callable::get);
+            thread.start();
+            try {
+                return thread.get(JOIN_TIMEOUT_MILLIS, MILLISECONDS);
+            } catch (ExecutionException | TimeoutException e) {
+                throw new RuntimeException(e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new TerminateScriptException(e);
+            }
         }
     }
-
-    <T> T withTickLock(Callable<T> runnable) {
-        tickDataLock.lock();
-        try {
-            return runnable.call();
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        } finally {
-            tickDataLock.unlock();
-        }
-    }
-
-    void assertTickLockHeld() {
-        assert tickDataLock.isHeldByCurrentThread();
-    }
-
-
 
     int getCurrentTick() {
-        return withTickLock(() -> tick);
+        return executeWithinScriptThread(() -> data.get().tick);
     }
 
     ArrayList<String> getActiveRunnables() {
-        assert Thread.currentThread() == executorThread;
+        assertIsExecutorThread();
 
-        return withTickLock(() -> {
-            ArrayList<String> runnables = new ArrayList<>();
-            scheduledRunnables.forEach(runnable -> runnables.add(runnable.name()));
-            delayedTickThreads.forEach(thread -> runnables.add(thread.runnableName));
-            return runnables;
-        });
+        ArrayList<String> runnables = new ArrayList<>();
+        scheduledRunnables.forEach(runnable -> runnables.add(runnable.name()));
+        delayedTickThreads.forEach(thread -> runnables.add(thread.runnableName));
+        return runnables;
     }
 
-    private class TickThread extends Thread {
+    void printlnMarked(String s) {
+        printfMarked("%s%n", s);
+    }
+
+    void printfMarked(String format, Object... args) {
+        System.out.printf(System.identityHashCode(this) + ": " + format, args);
+    }
+
+    private class TickThread extends Fiber<Void> {
         private final AtomicReference<ThreadContextImpl> threadContext = new AtomicReference<>();
 
-        TickThread(Runnable runnable, String name) {
-            super(runnable, name);
+        TickThread(SuspendableRunnable runnable, String name) {
+            super(name, scheduler, runnable);
+
+            assertIsExecutorThread();
         }
     }
 
     private class ThreadContextImpl implements ThreadContext {
         private final TickThread thread;
-        private final ReadWriteLock delayLock = new ReentrantReadWriteLock();
-
-        @GuardedBy("delayLock")
-        private final AtomicReference<DelayContext> delayContext = new AtomicReference<>();
+        private final AtomicReference<UntilContext> untilContext = new AtomicReference<>();
 
         private final String runnableName;
+        private final SuspendableRunnable suspendableRunnable;
 
         private ThreadContextImpl(NamedRunnable runnable) {
-            assert Thread.currentThread() == executorThread;
+            assertIsExecutorThread();
+
             runnableName = runnable.name();
-            thread = new TickThread(() -> withTickLock(() -> {
+            suspendableRunnable = () -> {
                 this.delayUntil(() -> true); // required by executeTick
+                printlnMarked("Actually starting " + runnableName);
                 runnable.run();
-            }), "TickThread - " + runnable.name());
+                printlnMarked("Successfully finished " + runnableName);
+            };
+            thread = new TickThread(suspendableRunnable, "TickThread - " + runnable.name());
             thread.threadContext.set(this);
         }
 
         // executed by TickThread.thread
         @Override
-        public void delayUntil(Supplier<Boolean> untilPredicate) {
-            assert Thread.currentThread() == thread;
+        public void delayUntil(BooleanSupplier untilPredicate) throws SuspendExecution {
+            assertIsFiberThread();
 
-            delayLock.writeLock().lock();
-            try {
-                assert tickDataLock.isHeldByCurrentThread();
+            if (untilPredicate.getAsBoolean()) return;
 
-                DelayContext newDelay = new DelayContext(untilPredicate);
-                delayContext.set(newDelay);
-
-                tickDataLock.unlock();
-            } finally {
-                delayLock.writeLock().unlock();
-            }
+            UntilContext oldContext = untilContext.getAndUpdate(old -> new UntilContext(untilPredicate));
+            assert oldContext == null || oldContext.latch.getCount() == 0;
+            UntilContext untilContext = this.untilContext.get();
 
             try {
-                assert !tickDataLock.isHeldByCurrentThread();
-                thread.setPriority(MIN_PRIORITY);
-                delayContext.get().await();
-            } finally {
-                tickDataLock.lock();
-                assert tickDataLock.isHeldByCurrentThread();
+                do {
+                    untilContext.latch.await();
+                } while (untilContext.latch.getCount() > 0);
+                assert untilContext.latch.getCount() == 0;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new TerminateScriptException(e);
             }
+            printlnMarked("Resuming after delay - " + thread.threadContext.get().runnableName);
         }
 
-        // executed by PerTickExecutor
         boolean tryContinue() {
-            assert Thread.currentThread() == executorThread;
+            assertIsExecutorThread();
 
-            delayLock.readLock().lock();
-            try {
-                boolean resumed = delayContext.get().tryContinue();
-                if (resumed) {
-//                    System.out.println(runnableName + "- resumed");
-                    thread.setPriority(defaultPriority);
+            boolean canBeResumed = executeWithinScriptThread(() -> {
+                UntilContext untilContext = this.untilContext.get();
+                return untilContext == null || untilContext.condition.getAsBoolean();
+            });
+            if (canBeResumed) {
+                UntilContext untilContext = this.untilContext.get();
+                if (untilContext != null) {
+                    untilContext.latch.countDown();
                 }
-                return resumed;
-            } finally {
-                delayLock.readLock().unlock();
+                //printlnMarked(runnableName + "- resumed");
             }
+            return canBeResumed;
         }
 
-        private boolean tryJoin() throws InterruptedException, TimeoutException {
-            assert Thread.currentThread() == executorThread;
+        private boolean tryJoin() throws TimeoutException {
+            assertIsExecutorThread();
 
-            thread.join(JOIN_TIMEOUT_MILLIS);
-            if (thread.getState() != TERMINATED) {
+            try {
+                thread.join(JOIN_TIMEOUT_MILLIS, MILLISECONDS);
+                return true;
+            } catch (TimeoutException e) {
                 if (isDelayed()) {
                     return false;
                 } else {
-                    throw new TimeoutException("Some thread is run-away. Probably you forgot to add 'delay'?");
+                    thread.cancel(true);
+                    throw new TimeoutException(
+                            String.format("Thread '%s' is run-away. Probably you forgot to add 'delay'?",
+                                    thread.threadContext.get().runnableName));
                 }
-            } else {
-                return true;
+            } catch (ExecutionException e) {
+                Throwable cause = e.getCause();
+                throw new RuntimeException(cause != null ? cause : e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new TerminateScriptException(e);
             }
         }
 
         private boolean isDelayed() {
-            assert Thread.currentThread() == executorThread;
+            assertIsExecutorThread();
 
-            delayLock.readLock().lock();
-            try {
-                return thread.getState() != RUNNABLE;
-            } finally {
-                delayLock.readLock().unlock();
-            }
+            return !isRunning(thread);
         }
 
         void start() {
-            assert Thread.currentThread() == executorThread;
+            assertIsExecutorThread();
 
             thread.start();
         }
     }
 
-    class DelayContext {
-        private final Supplier<Boolean> untilPredicate;
-        private final CountDownLatch latch = new CountDownLatch(1);
+    static class UntilContext {
+        final CountDownLatch latch = new CountDownLatch(1);
+        final BooleanSupplier condition;
 
-        DelayContext(Supplier<Boolean> untilPredicate) {
-            assert Thread.currentThread() != executorThread;
-
-            Objects.requireNonNull(untilPredicate);
-            this.untilPredicate = untilPredicate;
-        }
-
-        boolean tryContinue() {
-            assert Thread.currentThread() == executorThread;
-
-            if (latch.getCount() > 0) {
-                return withTickLock(() -> {
-                    try {
-                        if (untilPredicate.get()) {
-                            latch.countDown();
-                            return true;
-                        }
-                        return false;
-                    } catch (Exception e) {
-                        throw new RuntimeException(e);
-                    }
-                });
-            }
-            throw new IllegalStateException();
-        }
-
-        private boolean isWaiting() {
-            assert Thread.currentThread() == executorThread;
-
-            return latch.getCount() > 0;
-        }
-
-        void await() {
-            assert Thread.currentThread() != executorThread;
-
-            try {
-                latch.await();
-            } catch (InterruptedException e) {
-                throw new TerminateScriptException(e);
-            }
+        private UntilContext(BooleanSupplier condition) {
+            this.condition = condition;
         }
     }
-}
 
-interface NamedRunnable extends Runnable {
-    String name();
+    private static class PerTickExecutorData {
+        private int tick = -1;
+    }
 }
 
 interface ThreadContext {
     // executed by TickThread.thread
-    void delayUntil(Supplier<Boolean> untilPredicate);
+    void delayUntil(BooleanSupplier untilPredicate) throws SuspendExecution;
 }

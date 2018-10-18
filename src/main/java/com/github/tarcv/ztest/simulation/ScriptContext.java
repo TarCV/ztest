@@ -1,51 +1,51 @@
 package com.github.tarcv.ztest.simulation;
 
+import co.paralleluniverse.fibers.SuspendExecution;
+import co.paralleluniverse.strands.SuspendableRunnable;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
-import java.util.function.Supplier;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 
 import static com.github.tarcv.ztest.simulation.ScriptContext.ScriptType.*;
 import static com.github.tarcv.ztest.simulation.Symbols.APROP_HEALTH;
 import static com.github.tarcv.ztest.simulation.Symbols.INPUT_BUTTONS;
 
-public class ScriptContext {
-    @NotNull private final MapContext mapContext;
+public abstract class ScriptContext<T extends ScriptContext> {
+    @NotNull private final MapContext<T> mapContext;
     private final ActivatorHolder context = new ActivatorHolder(null);
     private final boolean isMainScriptContext;
 
-    protected interface ScriptContextCreator {
-        ScriptContext create(Simulation simulation, MapContext context);
+    protected interface ScriptContextCreator<T extends ScriptContext> {
+        ScriptContext<T> create(Simulation simulation, MapContext<T> context);
     }
 
     public ScriptContext(
-            Simulation simulation,
-            @Nullable MapContext mapContext,
-            ScriptContextCreator supplier,
-            Script[] scripts) {
+            Simulation<T> simulation,
+            @Nullable MapContext<T> mapContext,
+            ScriptContextCreator<T> supplier,
+            List<Script<T>> scripts) {
         if (mapContext == null) {
             this.isMainScriptContext = true;
-            this.mapContext = new MapContext(simulation, supplier, scripts);
+            this.mapContext = new MapContext<T>(simulation, supplier, scripts);
         } else {
             this.isMainScriptContext = false;
             this.mapContext = mapContext;
         }
     }
 
-    protected void ACS_NamedExecuteWait(String name, int where, Object... args) {
+    protected void ACS_NamedExecuteWait(String name, int where, Object... args) throws SuspendExecution {
         if (where != 0) throw new IllegalArgumentException("where must be 0");
         ACS_NamedExecute(name, where, args);
         namedScriptWait(name);
     }
 
-    protected void namedScriptWait(String name) {
+    protected void namedScriptWait(String name) throws SuspendExecution {
         delayUntil(() -> !mapContext.executedScripts.contains(name));
     }
 
@@ -106,13 +106,13 @@ public class ScriptContext {
         }
     }
 
-    protected void delay(int tics) {
+    protected void delay(int tics) throws SuspendExecution {
         if (tics <= 0) throw new IllegalArgumentException("tics number must be positive");
         int targetTic = mapContext.simulation.getCurrentTick() + tics;
         delayUntil(() -> mapContext.simulation.getCurrentTick() >= targetTic);
     }
 
-    private void delayUntil(Supplier<Boolean> predicate) {
+    private void delayUntil(BooleanSupplier predicate) throws SuspendExecution {
         mapContext.simulation.getThreadContext()
                 .delayUntil(predicate);
     }
@@ -304,16 +304,30 @@ public class ScriptContext {
         synchronized (mapContext.scripts) {
             mapContext.scripts.forEach(script -> {
                 if (script.type.contains(type)) {
-                    scheduleScriptInternal(activator, script.name, true, new Object[0]);
+                    scheduleScriptInternal(activator, script, true, new Object[0]);
                 }
             });
         }
     }
 
     private void scheduleScriptInternal(Thing activator, String name, boolean always, Object[] args) {
-        ScriptContext scriptContext = mapContext.ctor.create(mapContext.simulation, mapContext);
+        Script<T> script = getScriptForName(name);
+        scheduleScriptInternal(activator, script, always, args);
+    }
+
+    private ScriptContext.Script<T> getScriptForName(String name) {
+        return mapContext.scripts.stream()
+                    .filter(s -> s.name.equals(name))
+                    .findAny()
+                    .orElseGet(() -> {
+                        throw new IllegalArgumentException("Script " + name + " not found");
+                    });
+    }
+
+    private void scheduleScriptInternal(Thing activator, Script<T> script, boolean always, Object[] args) {
+        ScriptContext<T> scriptContext = mapContext.ctor.create(mapContext.simulation, mapContext);
         scriptContext.context.setActivator(activator);
-        scriptContext.scheduleScriptOnThisContext(name, always, args);
+        scriptContext.scheduleScriptOnThisContext(script, always, args);
     }
 
     protected void ACS_NamedExecute(String name, int where, Object... args) {
@@ -333,6 +347,10 @@ public class ScriptContext {
         pukeScript(pawn, name, args);
     }
 
+    protected void printlnMarked(String s) {
+        mapContext.simulation.printlnMarked(s);
+    }
+
     public void pukeScript(Thing activator, String name, Object... args) {
         mapContext.simulation.withTickLock(() -> scheduleScriptInternal(activator, name, true, args));
     }
@@ -350,76 +368,65 @@ public class ScriptContext {
 
     List<NamedRunnable> createInitRunnables() {
         synchronized (mapContext.scripts) {
-            List<String> openScripts = mapContext.scripts.stream()
+            List<Script<T>> openScripts = mapContext.scripts.stream()
                     .filter(script -> script.type.contains(OPEN))
+                    .collect(Collectors.toList());
+            List<String> openScriptsNames = openScripts.stream()
                     .map(script -> script.name)
                     .collect(Collectors.toList());
-            mapContext.executedScripts.addAll(openScripts);
+            mapContext.executedScripts.addAll(openScriptsNames);
             return openScripts.stream()
-                    .map(name -> getScriptRunnable(name, new Object[0]))
+                    .map(script -> getScriptRunnable(script, new Object[0]))
                     .collect(Collectors.toList());
         }
     }
 
-    private void scheduleScriptOnThisContext(String name, boolean always, Object... args) {
-        if (always || !mapContext.executedScripts.contains(name)) {
-            boolean added = mapContext.executedScripts.add(name);
+    private void scheduleScriptOnThisContext(Script<T> script, boolean always, Object... args) {
+        if (always || !mapContext.executedScripts.contains(script.name)) {
+            boolean added = mapContext.executedScripts.add(script.name);
             assert added;
             // name is removed by runnabled returned from getScriptRunnable
 
-            NamedRunnable scriptRunnable = getScriptRunnable(name, args);
+            NamedRunnable scriptRunnable = getScriptRunnable(script, args);
             mapContext.simulation.scheduleOnNextTic(scriptRunnable);
         }
     }
 
-    private NamedRunnable getScriptRunnable(String name, Object[] args) {
-        Method scriptMethod = findScriptMethodByName(name);
-        ScriptContext that = this;
+    protected abstract NamedRunnable getScriptRunnable(Script<T> script, Object[] args);
+
+    protected NamedRunnable createScriptRunnable(T that, Script<T> script, Object[] args) {
         return new NamedRunnable() {
             @Override
             public String name() {
-                return name;
+                return script.name;
             }
 
             @Override
-            public void run() {
+            public void run() throws SuspendExecution {
                 try {
-                    assert mapContext.executedScripts.contains(name);
+                    assert mapContext.executedScripts.contains(script.name);
 
-                    scriptMethod.setAccessible(true);
-                    scriptMethod.invoke(that, args);
-                } catch (IllegalAccessException e) {
-                    throw new IllegalStateException(e);
-                } catch (InvocationTargetException e) {
-                    Throwable targetException = e.getTargetException();
-
-                    // workaround to emulate `terminate` statement
-                    if (!(targetException instanceof TerminateScriptException)) {
-                        throw new IllegalStateException(e);
-                    }
-                } finally {
-                    boolean removed = mapContext.executedScripts.remove(name);
+                    script.runnable.callScript(that, args);
+                    boolean removed = mapContext.executedScripts.remove(script.name);
+                    assert removed;
+                } catch (RuntimeException e) {
+                    boolean removed = mapContext.executedScripts.remove(script.name);
                     assert removed;
                 }
             }
         };
     }
 
-    private Method findScriptMethodByName(String name) {
-        for (Method method : getClass().getDeclaredMethods()) {
-            if (name.equals(method.getName())) {
-                return method;
-            }
-        }
-        throw new IllegalStateException("Script '" + name + "' not found");
-    }
-
-    public static class Script {
+    public static class Script<T extends ScriptContext> {
         final String name;
+        final int argumentNumber;
+        final ScriptRunnable<T> runnable;
         final Set<ScriptType> type;
 
-        public Script(String name, ScriptType... types) {
+        public Script(String name, int argumentNumber, ScriptRunnable<T> runnable, ScriptType... types) {
             this.name = name;
+            this.argumentNumber = argumentNumber;
+            this.runnable = runnable;
             this.type = types.length > 0 ? EnumSet.copyOf(Arrays.asList(types)) : EnumSet.noneOf(ScriptType.class);
         }
     }
@@ -434,4 +441,9 @@ public class ScriptContext {
         RESPAWN,
         DISCONNECT
     }
+
+    protected interface NamedRunnable extends SuspendableRunnable {
+        String name();
+    }
 }
+

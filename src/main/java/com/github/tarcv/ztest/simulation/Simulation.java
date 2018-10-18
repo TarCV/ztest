@@ -1,5 +1,8 @@
 package com.github.tarcv.ztest.simulation;
 
+import com.github.tarcv.ztest.simulation.ScriptContext.NamedRunnable;
+import org.jetbrains.annotations.Nullable;
+
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.util.*;
@@ -11,12 +14,10 @@ import java.util.stream.Stream;
 
 import static com.github.tarcv.ztest.simulation.Simulation.CVarTypes.USER;
 
-public class Simulation {
+public class Simulation<T extends ScriptContext> {
     private final Random randomSource;
-
-    private final Player[] players = new Player[32];
-    private final List<Thing> things = new ArrayList<>();
-    private final List<ScriptContext> scriptEventListeners = Collections.synchronizedList(new ArrayList<>());
+    private final ScriptThreadEnforcer<SimulationData> data;
+    private final List<ScriptContext<T>> scriptEventListeners = Collections.synchronizedList(new ArrayList<>());
     private final PerTickExecutor executor;
     private final Map<String, CVarTypes> cvarTypes = Collections.synchronizedMap(new HashMap<>());
     private final Map<String, Object> serverCvarValues = Collections.synchronizedMap(new HashMap<>());
@@ -25,11 +26,12 @@ public class Simulation {
     public Simulation(long seed) {
         this.randomSource = new Random(seed);
         this.executor = new PerTickExecutor(randomSource);
+        this.data = new ScriptThreadEnforcer<>(executor, new SimulationData());
         this.cvarTypes.put("playerclass", USER);
     }
 
     public Player addPlayer(String name, int health, int armor, boolean isBot) {
-        return executor.withTickLock(() -> {
+        return executor.executeWithinScriptThread(() -> {
             Player player = new Player(this, name, health, armor, isBot);
             addPlayerToArray(player);
             return player;
@@ -37,16 +39,14 @@ public class Simulation {
     }
 
     private void addPlayerToArray(Player player) {
-        {
-            executor.assertTickLockHeld();
-            for (int i = 0; i < players.length; i++) {
-                if (players[i] == null) {
-                    players[i] = player;
+        executor.assertIsFiberThread();
+        for (int i = 0; i < data.get().players.length; i++) {
+                if (data.get().players[i] == null) {
+                    data.get().players[i] = player;
                     return;
                 }
             }
             throw new IllegalStateException("Max number of players is already reached");
-        }
     }
 
     public void registerScriptEventsListener(ScriptContext scriptContext) {
@@ -55,15 +55,16 @@ public class Simulation {
                 String.format("Can only be called before the very first tick. Got: %d", currentTic));
         scriptContext.assertIsMainScriptContext();
 
-        executor.withTickLock(() -> {
+        executor.executeWithinScriptThread(() -> {
             scriptEventListeners.add(scriptContext);
+            return null;
         });
     }
 
     void registerThing(Thing thing) {
         {
-            executor.assertTickLockHeld();
-            things.add(thing);
+            executor.assertIsFiberThread();
+            data.get().things.add(thing);
         }
     }
 
@@ -81,8 +82,8 @@ public class Simulation {
 
     List<Player> getPlayers() {
         {
-            executor.assertTickLockHeld();
-            return Stream.of(players)
+            executor.assertIsFiberThread();
+            return Stream.of(data.get().players)
                     .filter(Objects::nonNull)
                     .collect(Collectors.toList());
         }
@@ -90,8 +91,8 @@ public class Simulation {
 
     Player getPlayerByIndex(int playerNumber) {
         {
-            executor.assertTickLockHeld();
-            Player player = players[playerNumber];
+            executor.assertIsFiberThread();
+            Player player = data.get().players[playerNumber];
             if (player == null) throw new IllegalStateException("Player with this number is not present");
             return player;
         }
@@ -99,9 +100,9 @@ public class Simulation {
 
     int getPlayerIndex(Player player) {
         {
-            executor.assertTickLockHeld();
-            for (int i = 0; i < players.length; i++) {
-                if (players[i] == player) return i;
+            executor.assertIsFiberThread();
+            for (int i = 0; i < data.get().players.length; i++) {
+                if (data.get().players[i] == player) return i;
             }
         }
         throw new IllegalStateException("Player is not present in the simulation");
@@ -112,7 +113,7 @@ public class Simulation {
     }
 
     CVarTypes getCVarType(String name) {
-        return executor.withTickLock(() -> {
+        return executor.executeWithinScriptThread(() -> {
             CVarTypes cVarType = cvarTypes.get(name);
             if (cVarType == null) throw new IllegalStateException("CVAR was not registered by a test");
             return cVarType;
@@ -121,7 +122,7 @@ public class Simulation {
 
     Object getCVarInternal(String name) {
         {
-            executor.assertTickLockHeld();
+            executor.assertIsFiberThread();
             if (getCVarType(name).isPlayerOwned()) throw new IllegalArgumentException("CVAR is not a server one");
             return serverCvarValues.get(name);
         }
@@ -139,11 +140,11 @@ public class Simulation {
         return things;
     }
 
-    private List<Thing> getThingsByTid(int tid, Thing activator) {
+    private List<Thing> getThingsByTid(int tid, @Nullable Thing activator) {
         if (tid != 0) {
             {
-                executor.assertTickLockHeld();
-                return things.stream()
+                executor.assertIsFiberThread();
+                return data.get().things.stream()
                         .filter(t -> t.getTid() == tid)
                         .collect(Collectors.toList());
             }
@@ -155,8 +156,9 @@ public class Simulation {
     }
 
     public void setCVar(String name, Object newValue) {
-        executor.withTickLock(() -> {
+        executor.executeWithinScriptThread(() -> {
             if (getCVarType(name).isPlayerOwned()) throw new IllegalArgumentException("CVAR is not a server one");
+            printlnMarked("setting " + name);
             serverCvarValues.put(name, newValue);
         });
     }
@@ -165,7 +167,7 @@ public class Simulation {
         // TODO: play Death or XDeath animation
         if (actor instanceof PlayerPawn) {
             {
-                executor.assertTickLockHeld();
+                executor.assertIsFiberThread();
                 PlayerPawn playerPawn = (PlayerPawn) actor;
                 fireScriptEventListeners(listener -> listener.onPlayerKilled(playerPawn));
             }
@@ -173,9 +175,10 @@ public class Simulation {
     }
 
     private void fireScriptEventListeners(Consumer<ScriptContext> mapContextConsumer) {
-        executor.withTickLock(() -> {
+        executor.executeWithinScriptThread(() -> {
             synchronized (scriptEventListeners) {
                 scriptEventListeners.forEach(mapContextConsumer);
+                return null;
             }
         });
     }
@@ -188,7 +191,7 @@ public class Simulation {
 
     void createThing(String type, double x, double y, int z, int newtid, int angle) {
         {
-            executor.assertTickLockHeld();
+            executor.assertIsFiberThread();
             Thing newThing;
             try {
                 newThing = (Thing) getConstructor(classForSimpleName(type)).newInstance(this);
@@ -199,7 +202,7 @@ public class Simulation {
             newThing.setAngle(angle);
             newThing.setTid(newtid);
 
-            things.add(newThing);
+            data.get().things.add(newThing);
         }
     }
 
@@ -220,27 +223,28 @@ public class Simulation {
                     List<NamedRunnable> openRunnables = scriptEventListeners.stream()
                             .flatMap(listener -> listener.createInitRunnables().stream())
                             .collect(Collectors.toList());
+                    printlnMarked("Executing OPEN scripts");
                     executor.executeTickWithRunnables(openRunnables);
                 }
             }
 
             boolean isSimIdle = false;
             for (int i = 0; i < ticks || !isSimIdle; i++) {
-                if (i % 35 == 0) {
-                    withTickLock(() -> {
-                        int currentTick = this.getCurrentTick();
-                        double second = currentTick / 35.0;
-                        System.out.printf("-- Tick %d | %.2f second in the sim ---------------------%n",
-                                currentTick, second);
-                    });
-                }
+                int currentTick = executor.getCurrentTick();
+                double second = currentTick / 35.0;
+                printfMarked("-- Tick %d | %.2f second in the sim ---------------------%n",
+                        currentTick, second);
 
                 executor.executeTick();
                 isSimIdle = isIdle.test(executor.getActiveRunnables());
             }
-        } catch (InterruptedException | TimeoutException e) {
+        } catch (TimeoutException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    public void printlnMarked(String s) {
+        executor.printlnMarked(s);
     }
 
     Class<?> classForSimpleName(String className) throws ClassNotFoundException {
@@ -255,12 +259,22 @@ public class Simulation {
         return executor.getThreadContext();
     }
 
-    public void withTickLock(Runnable runnable) {
-        executor.withTickLock(runnable);
+    void assertTickLockHeld() {
+        executor.assertIsFiberThread();
     }
 
-    public void assertTickLockHeld() {
-        executor.assertTickLockHeld();
+    public void withTickLock(Runnable runnable) {
+        executor.executeWithinScriptThread(runnable);
+    }
+
+    public void printfMarked(String format, Object... args) {
+        executor.printfMarked(format, args);
+    }
+
+    private static class SimulationData {
+        // Should be accessed within script context only
+        private final Player[] players = new Player[32];
+        private final List<Thing> things = new ArrayList<>();
     }
 
     public enum CVarTypes {

@@ -1,21 +1,20 @@
     package com.github.tarcv.ztest.simulation;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
-public class MapContext {
+public class MapContext<T extends ScriptContext> {
     final List<String> executedScripts = Collections.synchronizedList(new ArrayList<>());
-    final ScriptContext.ScriptContextCreator ctor;
-    final Simulation simulation;
-    final List<ScriptContext.Script> scripts; // TODO: make read-only
+    final ScriptContext.ScriptContextCreator<T> ctor;
+    final Simulation<T> simulation;
+    final List<ScriptContext.Script<T>> scripts; // TODO: make read-only
 
-    MapContext(Simulation simulation, ScriptContext.ScriptContextCreator supplier, ScriptContext.Script[] scripts) {
+    MapContext(Simulation<T> simulation, ScriptContext.ScriptContextCreator<T> supplier, List<ScriptContext.Script<T>> scripts) {
         super();
         this.ctor = supplier;
         this.simulation = simulation;
-        this.scripts = Collections.unmodifiableList(Arrays.asList(scripts));
+        this.scripts = Collections.unmodifiableList(new ArrayList<>(scripts));
     }
 
 }

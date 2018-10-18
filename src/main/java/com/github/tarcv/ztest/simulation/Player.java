@@ -44,11 +44,11 @@ public class Player implements Owner {
         simulation.withTickLock(() -> {
             if (pawn == null) {
                 this.pawn = createPawn();
-                System.out.printf("- %s joined the game as %d%n", name, this.pawn.getClassIndex());
+                simulation.printfMarked("- %s joined the game as %d%n", name, this.pawn.getClassIndex());
                 simulation.onPlayerJoined(pawn);
             } else if (pawn.getHealth() <= 0) {
                 this.pawn = createPawn();
-                System.out.printf("- %s respawned as %d%n", name, this.pawn.getClassIndex());
+                simulation.printfMarked("- %s respawned as %d%n", name, this.pawn.getClassIndex());
                 simulation.onPlayerRespawned(pawn);
             }
         });

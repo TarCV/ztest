@@ -1,5 +1,9 @@
 package com.github.tarcv.ztest.simulation;
 
+import co.paralleluniverse.fibers.SuspendExecution;
+
+import static com.github.tarcv.ztest.simulation.ScriptContext.NamedRunnable;
+
 public abstract class CustomInventory extends Thing {
     protected CustomInventory(Simulation simulation) {
         super(simulation);
@@ -19,7 +23,7 @@ public abstract class CustomInventory extends Thing {
             }
 
             @Override
-            public void run() {
+            public void run() throws SuspendExecution {
                 Pickup();
             }
         });
