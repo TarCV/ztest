@@ -1,8 +1,8 @@
 package com.github.tarcv.ztest.simulation;
 
 class DamageFrag extends DamageType {
-    DamageFrag() {
-        super();
+    DamageFrag(Simulation simulation) {
+        super(simulation);
         setFlag("NoArmor");
     }
 }

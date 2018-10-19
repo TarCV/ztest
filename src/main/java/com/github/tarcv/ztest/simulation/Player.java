@@ -5,9 +5,9 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static com.github.tarcv.ztest.simulation.Constants.PROP_FROZEN;
-import static com.github.tarcv.ztest.simulation.Constants.PROP_TOTALLYFROZEN;
-import static com.github.tarcv.ztest.simulation.Symbols.PLAYERINFO_PLAYERCLASS;
+import static com.github.tarcv.ztest.simulation.AcsConstants.PLAYERINFO_PLAYERCLASS;
+import static com.github.tarcv.ztest.simulation.DecorateConstants.PROP_FROZEN;
+import static com.github.tarcv.ztest.simulation.DecorateConstants.PROP_TOTALLYFROZEN;
 
 public class Player implements Owner {
     private final Hud console = new Hud();
@@ -140,7 +140,7 @@ public class Player implements Owner {
 
     public void fragOther(Player victim) {
         simulation.withTickLock(() -> {
-            victim.pawn.damageThing(999, new DamageFrag(), pawn);
+            victim.pawn.damageThing(999, new DamageFrag(simulation), pawn);
         });
     }
 }

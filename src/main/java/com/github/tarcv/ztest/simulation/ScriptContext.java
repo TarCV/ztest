@@ -12,9 +12,9 @@ import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 
+import static com.github.tarcv.ztest.simulation.AcsConstants.APROP_HEALTH;
+import static com.github.tarcv.ztest.simulation.AcsConstants.INPUT_BUTTONS;
 import static com.github.tarcv.ztest.simulation.ScriptContext.ScriptType.*;
-import static com.github.tarcv.ztest.simulation.Symbols.APROP_HEALTH;
-import static com.github.tarcv.ztest.simulation.Symbols.INPUT_BUTTONS;
 
 public abstract class ScriptContext<T extends ScriptContext> {
     @NotNull private final MapContext<T> mapContext;
@@ -22,7 +22,7 @@ public abstract class ScriptContext<T extends ScriptContext> {
     private final boolean isMainScriptContext;
 
     protected interface ScriptContextCreator<T extends ScriptContext> {
-        ScriptContext<T> create(Simulation simulation, MapContext<T> context);
+        ScriptContext<T> create(Simulation<T> simulation, MapContext<T> context);
     }
 
     public ScriptContext(
@@ -63,11 +63,11 @@ public abstract class ScriptContext<T extends ScriptContext> {
     }
 
 
-    protected void printbold(String format, Object... args) {
+    protected void printBold(String format, Object... args) {
         mapContext.simulation.getPlayers().forEach(p -> p.printbold(format, args));
     }
 
-    protected void setPlayerProperty(int who, int value, int which) {
+    protected void SetPlayerProperty(int who, int value, int which) {
         if (who == 1) {
             mapContext.simulation.getPlayers().forEach(p -> p.setProperty(which, value));
         } else if (who == 0) {
@@ -236,7 +236,7 @@ public abstract class ScriptContext<T extends ScriptContext> {
         }
     }
 
-    protected void Thing_Damage2(int tid, int damage, String mod) {
+    protected void thing_Damage2(int tid, int damage, String mod) {
         DamageType damageType;
         try {
             damageType = (DamageType) mapContext.simulation.classForSimpleName(mod).newInstance();
