@@ -150,8 +150,8 @@ class PerTickExecutor {
             Fiber<T> thread = new Fiber<>("Between ticks execution", scheduler, callable::get);
             thread.start();
             try {
-                return thread.get(JOIN_TIMEOUT_MILLIS, MILLISECONDS);
-            } catch (ExecutionException | TimeoutException e) {
+                return thread.get();
+            } catch (ExecutionException e) {
                 throw new RuntimeException(e);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
