@@ -8,8 +8,8 @@ import java.nio.file.Paths;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static com.github.tarcv.ztest.converter.ConvertUtils.removeByPattern;
-import static com.github.tarcv.ztest.converter.ConvertUtils.tryReplace;
+import static com.github.tarcv.ztest.converter.ConvertUtils.*;
+import static java.lang.System.lineSeparator;
 import static java.util.regex.Pattern.*;
 
 class DecorateConverter {
@@ -18,7 +18,11 @@ class DecorateConverter {
     static void convertDecorate(Path file) throws IOException {
         StringBuffer data = new StringBuffer(new String(Files.readAllBytes(file)));
         StringBuilder converted = new StringBuilder(data.length());
+        StringBuilder additionalJava = new StringBuilder();
 
+        Pattern additionalActors = Pattern.compile(
+                "^\\s*/\\*\\*TEST_ONLY([\\S\\s]+?)\\*\\*/$",
+                Pattern.MULTILINE);
         Pattern sectionPattern = Pattern.compile(
                 "\\s*(Actor|DamageType)\\s+(\\w+)\\s+(?::\\s+(\\w+)\\s+)?(?>\\{)(.*?)\\}\\s*(?=actor|damagetype|\\Z)",
                 DOTALL | CASE_INSENSITIVE);
@@ -27,7 +31,16 @@ class DecorateConverter {
         data = removeByPattern(data, lineCommentPattern);
 
         StringBuffer leftOut;
-        leftOut = tryReplace(data, sectionPattern, matcher -> {
+
+        leftOut = tryParseAndRemove(data, additionalActors, additionalActorGroups -> {
+            String body = additionalActorGroups.group(1);
+            if (additionalJava.length() > 0) {
+                additionalJava.append(lineSeparator());
+            }
+            additionalJava.append(body);
+        });
+
+        leftOut = tryReplace(leftOut, sectionPattern, matcher -> {
             String type = matcher.group(1);
             String name = matcher.group(2);
             String parent = matcher.group(3);
@@ -52,15 +65,18 @@ class DecorateConverter {
 
         String leftOutFinal = leftOut.toString().trim();
         if (!leftOutFinal.isEmpty()) {
-            throw new IllegalStateException(String.format("Didn't understood: %s%s", System.lineSeparator(), leftOutFinal));
+            throw new IllegalStateException(String.format("Didn't understood: %s%s", lineSeparator(), leftOutFinal));
         }
 
         try (Writer writer = Files.newBufferedWriter(Paths.get(file.getFileName() + ".java"))) {
-            writer.append("package zdoom;").append(System.lineSeparator());
-            writer.append("import com.github.tarcv.converter.decorate.*;").append(System.lineSeparator());
-            writer.append("import static Constants.*;").append(System.lineSeparator());
-            writer.write(System.lineSeparator());
+            writer.append("package zdoom;")
+                    .append(lineSeparator()).append(lineSeparator());
+            writer.append("import com.github.tarcv.ztest.simulation.*;")
+                    .append(lineSeparator()).append(lineSeparator());
+            writer.append("import static com.github.tarcv.ztest.simulation.DecorateConstants.*;")
+                    .append(lineSeparator()).append(lineSeparator());
             writer.write(converted.toString());
+            writer.append(additionalJava).append(lineSeparator());
         }
     }
 
@@ -71,7 +87,7 @@ class DecorateConverter {
         }
         converted.append("class ").append(name);
         converted.append(" extends ").append(actualParent);
-        converted.append(" {").append(System.lineSeparator());
+        converted.append(" {").append(lineSeparator());
 
         StringBuilder ctor = new StringBuilder();
         StringBuilder methods = new StringBuilder();
@@ -97,10 +113,10 @@ class DecorateConverter {
                     String stateLine = sl.trim();
                     Matcher animationLineMatcher = animationLine.matcher(stateLine);
                     if ("stop".equalsIgnoreCase(stateLine)) {
-                        methodBody.append("\t\treturn null;").append(System.lineSeparator());
+                        methodBody.append("\t\treturn null;").append(lineSeparator());
                     } else if ("loop".equalsIgnoreCase(stateLine)) {
-                        methodBody.insert(0, "\t\twhile (true) {" + System.lineSeparator());
-                        methodBody.append("\t\t}").append(System.lineSeparator());
+                        methodBody.insert(0, "\t\twhile (true) {" + lineSeparator());
+                        methodBody.append("\t\t}").append(lineSeparator());
                     } else if (animationLineMatcher.matches()) {
                         methodBody.append("\t\tstates(")
                                 .append("\"").append(animationLineMatcher.group(1)).append("\", ")
@@ -113,50 +129,56 @@ class DecorateConverter {
                                 methodBody.append("()");
                             }
                         }
-                        methodBody.append(");").append(System.lineSeparator());
+                        methodBody.append(");").append(lineSeparator());
                     } else {
-                        leftOutLines.append(stateLine).append(System.lineSeparator());
+                        leftOutLines.append(stateLine).append(lineSeparator());
                     }
                 }
-                methods.append("\t@Override public Object ").append(animationName).append("() {").append(System.lineSeparator())
-                        .append(methodBody).append(System.lineSeparator())
-                        .append("\t}").append(System.lineSeparator());
+                methods.append(lineSeparator())
+                        .append("\t@Override").append(lineSeparator())
+                        .append("\tpublic Object ").append(animationName).append("() {").append(lineSeparator())
+                        .append(methodBody).append(lineSeparator())
+                        .append("\t}").append(lineSeparator());
 
                 return leftOutLines.toString();
             });
             return leftOutStates.toString();
         });
 
+        leftOutBody = ConvertUtils.tryParseAndRemove(leftOutBody, setFlag, flagSetMatcher -> {
+            String setName = flagSetMatcher.group(1);
+            ctor.append("\t\tsetFlag(\"").append(setName).append("\");").append(lineSeparator());
+        });
+
         leftOutBody = ConvertUtils.tryParseAndRemove(leftOutBody, addFlag, flagMatcher -> {
             String flagName = flagMatcher.group(1);
-            ctor.append("\t\taddFlag(\"").append(flagName).append("\");").append(System.lineSeparator());
+            ctor.append("\t\taddFlag(\"").append(flagName).append("\");").append(lineSeparator());
         });
 
         leftOutBody = ConvertUtils.tryParseAndRemove(leftOutBody, removeFlag, flagMatcher -> {
             String flagName = flagMatcher.group(1);
-            ctor.append("\t\tremoveFlag(\"").append(flagName).append("\");").append(System.lineSeparator());
-        });
-
-        leftOutBody = ConvertUtils.tryParseAndRemove(leftOutBody, setFlag, flagSetMatcher -> {
-            String setName = flagSetMatcher.group(1);
-            ctor.append("\t\tsetFlag(\"").append(setName).append("\");").append(System.lineSeparator());
+            ctor.append("\t\tremoveFlag(\"").append(flagName).append("\");").append(lineSeparator());
         });
 
         leftOutBody = ConvertUtils.tryParseAndRemove(leftOutBody, property, flagMatcher -> {
             String propertyName = flagMatcher.group(1);
             String propertyValue = flagMatcher.group(2);
             ctor.append("\t\tsetProperty(\"").append(propertyName).append("\", ").append(propertyValue).append(");")
-                    .append(System.lineSeparator());
+                    .append(lineSeparator());
         });
 
-        converted.append("\t").append(name).append("() {").append(System.lineSeparator())
-                .append("\t\tsuper();").append(System.lineSeparator())
-                .append(ctor)
-                .append("\t}").append(System.lineSeparator());
+        converted.append("\t").append(name).append("(Simulation simulation) {").append(lineSeparator())
+                .append("\t\tsuper(simulation);").append(lineSeparator());
+        if (ctor.length() > 0) {
+            converted.append(lineSeparator())
+                    .append(ctor);
+        }
+        converted.append("\t}").append(lineSeparator());
 
         converted.append(methods);
 
-        converted.append(" }").append(System.lineSeparator());
+        converted.append(" }").append(lineSeparator()).append(lineSeparator());
+
         return leftOutBody;
     }
 }

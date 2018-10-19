@@ -7,14 +7,37 @@ import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static com.github.tarcv.ztest.converter.ConvertUtils.*;
+import static java.lang.System.lineSeparator;
 import static java.util.regex.Pattern.CASE_INSENSITIVE;
 
 public class AcsConverter {
+
+    private static final String CREATE_MAIN_SCRIPT_CONTEXT = "public ScriptContext createMainScriptContext(Simulation<T> simulation) {\n" +
+            "    Scripts mapContext = new Scripts(simulation, null);\n" +
+            "    simulation.registerScriptEventsListener(mapContext); // scriptContext must be fully constructed here\n" +
+            "    setScripts(mapContext);\n" +
+            "    return mapContext;\n" +
+            "}".replace("\n", lineSeparator());
+    private static final String SCRIPTS_BEGIN = "Scripts(Simulation<Scripts> simulation, @Nullable MapContext<Scripts> mapContext) {\n" +
+            "    super(simulation, mapContext, new ScriptContextCreator<Scripts>()  {\n" +
+            "        @Override\n" +
+            "        public ScriptContext<Scripts> create(Simulation<Scripts> simulation, MapContext<Scripts> context) {\n" +
+            "            return new Scripts(simulation, context);\n" +
+            "        }\n" +
+            "    }, scripts());\n" +
+            "}\n" +
+            "\n" +
+            "@Override\n" +
+            "protected NamedRunnable getScriptRunnable(Script<Scripts> script, Object[] args) {\n" +
+            "    return createScriptRunnable(this, script, args);\n" +
+            "}".replace("\n", lineSeparator());
+
     private AcsConverter() {}
 
     static void convertAcs(Path file) throws IOException {
@@ -27,12 +50,18 @@ public class AcsConverter {
         data = removeByPattern(data, ignoredInclude);
 
         StringBuilder global = new StringBuilder();
+        StringBuilder globalInit = new StringBuilder();
         StringBuilder globalConstants = new StringBuilder();
         StringBuilder world = new StringBuilder();
+        StringBuilder worldInit = new StringBuilder();
         StringBuilder map = new StringBuilder();
         StringBuilder mapVars = new StringBuilder();
-        StringBuilder ctor = new StringBuilder();
+        StringBuilder scripts = new StringBuilder();
+        StringBuilder additionalScriptJava = new StringBuilder();
 
+        Pattern additionalMethod = Pattern.compile(
+                "^\\s*/\\*\\*TEST_ONLY_SCRIPTS\\s+([\\S\\s]+?)\\*\\*/$",
+                Pattern.MULTILINE);
         Pattern script = Pattern.compile(
                 "^script\\s+(\"\\w+\"|\\w+)\\s*(?:\\((\\s*void\\s*|\\s*\\w+\\s+\\w+\\s*(?:,\\s*\\w+\\s+\\w+\\s*)*)\\))?((?:\\s+\\w+)*)\\s*\\{([^}]+)\\}",
                 CASE_INSENSITIVE | Pattern.MULTILINE);
@@ -49,30 +78,65 @@ public class AcsConverter {
                 "^\\s*#(?:lib)?define\\s+(\\w+)\\s+(.+)$",
                 CASE_INSENSITIVE | Pattern.MULTILINE);
 
-        DataPair dataPair = tryParseAndRemove(new DataPair(data), script, scriptGroups -> {
+        DataPair dataPair = tryParseAndRemove(new DataPair(data), additionalMethod, additionalMethodGroups -> {
+            String body = additionalMethodGroups.group(1);
+            if (additionalScriptJava.length() > 0) {
+                additionalScriptJava.append(lineSeparator());
+            }
+            additionalScriptJava.append(body);
+        });
+
+        dataPair = tryParseAndRemove(dataPair, script, scriptGroups -> {
             String name = scriptGroups.group(1);
             if (name.startsWith("\"") && name.endsWith("\"")) {
                 name = name.substring(1, name.length() -1);
             }
 
             String arguments = convertArguments(scriptGroups.group(2));
+            String[] argumentArray = arguments.split(",");
+            if (argumentArray.length == 1 && argumentArray[0].isEmpty()) {
+                argumentArray = new String[0];
+            }
 
             String types = scriptGroups.group(3).trim();
             String body = scriptGroups.group(4);
 
-            ctor.append("\t\taddScript(\"").append(name).append("\"");
+            StringBuilder argLambda = new StringBuilder("(t, a) -> t.")
+                    .append(name).append("(");
+            int argIndex = 0;
+            for (String argument : argumentArray) {
+                String[] argParts = argument.trim().split("\\s+");
+                String type = String.join("", Arrays.copyOf(argParts, argParts.length - 1));
+                if (argIndex > 0) {
+                    argLambda.append(", ");
+                }
+                argLambda.append("(").append(type).append(") a[").append(argIndex).append("]");
+
+                ++argIndex;
+            }
+            argLambda.append(")");
+
+            if (scripts.length() > 0) {
+                scripts.append(", ").append(lineSeparator());
+            }
+            scripts.append("\t\tnew Script<>(\"")
+                    .append(name).append("\", ")
+                    .append(argumentArray.length).append(", ")
+                    .append(argLambda);
             if (types != null && !types.isEmpty()) {
-                String[] typesArr = types.trim().split("\\s");
+                String[] typesArr = types.trim().toUpperCase().split("\\s");
                 for (String type : typesArr) {
-                    ctor.append(", \"").append(type).append("\"");
+                    scripts.append(", ").append(type);
                 }
             }
-            ctor.append(");").append(System.lineSeparator());
+            scripts.append(")");
 
-            map.append("\tvoid Script_").append(name).append("(").append(arguments).append(")").append("{")
-                    .append(System.lineSeparator());
+            if (map.length() > 0) {
+                map.append(lineSeparator());
+            }
+            map.append("void ").append(name).append("(").append(arguments).append(") throws SuspendExecution {");
             map.append(convertScriptBody(body));
-            map.append("}").append(System.lineSeparator());
+            map.append("}").append(lineSeparator());
         });
 
         dataPair = tryParseAndRemove(dataPair, function, functionGroups -> {
@@ -83,19 +147,24 @@ public class AcsConverter {
 
             String body = functionGroups.group(4);
 
-            map.append("\t").append(returnType).append(" ").append(name).append("(").append(arguments).append(")").append("{")
-                    .append(System.lineSeparator());
+            if (map.length() > 0) {
+                map.append(lineSeparator());
+            }
+            map.append(returnType).append(" ").append(name).append("(").append(arguments).append(")").append("{");
             map.append(convertScriptBody(body));
-            map.append("}").append(System.lineSeparator());
+            map.append("}").append(lineSeparator());
         });
 
         dataPair = tryReplace(dataPair, globalVar, globalVarGroups -> {
             String scope = globalVarGroups.group(1).trim().toLowerCase();
             StringBuilder scopeBuilder;
+            StringBuilder scopeInitBuilder;
             if ("global".equals(scope)) {
                 scopeBuilder = global;
+                scopeInitBuilder = globalInit;
             } else if ("world".equals(scope)) {
                 scopeBuilder = world;
+                scopeInitBuilder = worldInit;
             } else {
                 return globalVarGroups.group();
             }
@@ -104,11 +173,16 @@ public class AcsConverter {
             String name = globalVarGroups.group(3);
             boolean isArray = name.trim().endsWith("]");
 
-            scopeBuilder.append("static ").append(type).append(" ").append(name);
+            scopeBuilder.append("\tstatic ").append(type).append(" ").append(name);
             if (isArray) {
-                scopeBuilder.append(" = new ").append(type).append("[100]");
+                int nameEnds = name.lastIndexOf("[");
+                scopeInitBuilder.append(lineSeparator())
+                        .append("\t\t").append(name, 0, nameEnds).append(" = new ").append(type).append("[1000];");
+            } else if ("int".equals(type)) {
+                scopeInitBuilder.append(lineSeparator())
+                        .append("\t\t").append(name).append(" = 0;");
             }
-            scopeBuilder.append(";").append(System.lineSeparator());
+            scopeBuilder.append(";").append(lineSeparator());
 
             return "";
         });
@@ -145,7 +219,7 @@ public class AcsConverter {
                     mapVars.append("new ").append(type).append(sizePart);
                 }
             }
-            mapVars.append(";").append(System.lineSeparator());
+            mapVars.append(";").append(lineSeparator());
 
             return "";
         });
@@ -163,48 +237,77 @@ public class AcsConverter {
             }
 
             globalConstants
-                    .append("static final ").append(type).append(" ").append(name).append(" = ").append(value)
-                    .append(";").append(System.lineSeparator());
+                    .append(lineSeparator())
+                    .append("\tstatic final ").append(type).append(" ").append(name).append(" = ").append(value)
+                    .append(";");
         });
 
-        try (Writer writer = Files.newBufferedWriter(Paths.get(file.getFileName() + ".java"))) {
-            String safeClassName = file.getFileName().toString().replace(".", "_");
+        String safeClassName = file.getFileName().toString().replace(".", "_");
+        try (Writer writer = Files.newBufferedWriter(Paths.get(safeClassName + ".java"))) {
 
-            writer.append("package zdoom;").append(System.lineSeparator());
-            writer.append("import com.github.tarcv.converter.acs.*;").append(System.lineSeparator());
-            writer.append("import static Symbols.*;").append(System.lineSeparator());
-            writer.append("import static zdoom.Global").append(safeClassName).append(".*;").append(System.lineSeparator());
-            writer.append("import static zdoom.World").append(safeClassName).append(".*;").append(System.lineSeparator());
-            writer.append(System.lineSeparator());
-            writer.append("class Global").append(safeClassName).append(" {").append(System.lineSeparator());
-            writer.append(globalConstants).append(System.lineSeparator());
-            writer.append(global).append(System.lineSeparator());
-            writer.append("}").append(System.lineSeparator()).append(System.lineSeparator());
+            writer.append("package zdoom;").append(lineSeparator());
+            writer.append("import co.paralleluniverse.fibers.SuspendExecution;").append(lineSeparator());
+            writer.append("import com.github.tarcv.ztest.simulation.*;").append(lineSeparator());
+            writer.append("import com.github.tarcv.ztest.simulation.ScriptContext.Script;").append(lineSeparator());
+            writer.append("import org.jetbrains.annotations.Nullable;").append(lineSeparator())
+                    .append(lineSeparator());
 
-            writer.append("class World").append(safeClassName).append(" {").append(System.lineSeparator());
-            writer.append(world).append(System.lineSeparator());
-            writer.append("}").append(System.lineSeparator()).append(System.lineSeparator());
+            writer.append("import java.util.Arrays;").append(lineSeparator());
+            writer.append("import java.util.List;").append(lineSeparator())
+                    .append(lineSeparator());
 
-            writer.append("class Map").append(safeClassName).append(" extends MapContext {").append(System.lineSeparator());
-            writer.append("Map").append(safeClassName).append("() {")
-                    .append("\t\tsuper();").append(System.lineSeparator())
-                    .append(ctor).append(System.lineSeparator())
-                    .append("}").append(System.lineSeparator());
-            writer.append(mapVars).append(System.lineSeparator());
-            writer.append(map).append(System.lineSeparator());
-            writer.append("}").append(System.lineSeparator()).append(System.lineSeparator());
+            writer.append("import static com.github.tarcv.ztest.simulation.ScriptContext.ScriptType.*;").append(lineSeparator());
+            writer.append("import static com.github.tarcv.ztest.simulation.AcsConstants.*;").append(lineSeparator());
+            writer.append("import static zdoom.Global").append(safeClassName).append(".*;").append(lineSeparator());
+            writer.append("import static zdoom.World").append(safeClassName).append(".*;").append(lineSeparator());
+            writer.append(lineSeparator());
+            writer.append("class Global").append(safeClassName).append(" {");
+            writer.append(globalConstants).append(lineSeparator()).append(lineSeparator());
+            if (global.length() > 0) {
+                writer.append(global).append(lineSeparator()).append(lineSeparator());
+            }
+            writer.append("\tpublic static void reset() {");
+            writer.append(globalInit).append(lineSeparator());
+            writer.append("\t}").append(lineSeparator());
+            writer.append("}").append(lineSeparator()).append(lineSeparator());
+
+            writer.append("class World").append(safeClassName).append(" {").append(lineSeparator());
+            if (world.length() > 0) {
+                writer.append(world).append(lineSeparator()).append(lineSeparator());
+            }
+            writer.append("\tpublic static void reset() {");
+            writer.append(worldInit).append(lineSeparator());
+            writer.append("\t}").append(lineSeparator());
+            writer.append("}").append(lineSeparator()).append(lineSeparator());
+
+            writer.append("class Map").append(safeClassName)
+                    .append(" extends VarContext<Map").append(safeClassName).append(".Scripts> {")
+                    .append(lineSeparator());
+            writer.append(mapVars).append(lineSeparator());
+            writer.append(CREATE_MAIN_SCRIPT_CONTEXT.replace("<T>", "<Map" + safeClassName + ".Scripts>")).append(lineSeparator()).append(lineSeparator());
+            writer.append("private static List<Script<Scripts>> scripts() {").append(lineSeparator())
+                    .append("\treturn Arrays.asList(").append(lineSeparator())
+                    .append(scripts).append(lineSeparator())
+                    .append("\t);").append(lineSeparator())
+                    .append("}").append(lineSeparator()).append(lineSeparator());
+            writer.append("public class Scripts extends ScriptContext<Scripts> {").append(lineSeparator());
+            writer.append(SCRIPTS_BEGIN).append(lineSeparator()).append(lineSeparator());
+            writer.append(map).append(lineSeparator());
+            writer.append(additionalScriptJava).append(lineSeparator());
+            writer.append("}").append(lineSeparator());
+            writer.append("}").append(lineSeparator());
         }
 
         String leftOutFinal = dataPair.data.toString();
         leftOutFinal = cleanupLeftoutData(leftOutFinal);
         if (!leftOutFinal.isEmpty() && !";".equals(leftOutFinal)) {
-            throw new IllegalStateException(String.format("Didn't understood: %s%s", System.lineSeparator(), leftOutFinal));
+            throw new IllegalStateException(String.format("Didn't understood: %s%s", lineSeparator(), leftOutFinal));
         }
     }
 
     private static StringBuffer convertScriptBody(String body) {
         Pattern print = Pattern.compile(
-                "(?<=\\W)(print|printbold|hudmessage|hudmessagebold)\\s*\\(([^;)]+)(?:;([^)]+))?\\)",
+                "(?<=\\W|_)(print|printbold|hudmessage|hudmessagebold)\\s*\\(([^;)]+)(?:;([^)]+))?\\)",
                 CASE_INSENSITIVE);
         Pattern outputArg = Pattern.compile("\\S*([bcdfiklnsx]):([^,]+)\\S*(?:,)?");
         DataPair bodyPair = tryReplace(new DataPair(body), print, printGroups -> {
@@ -272,6 +375,11 @@ public class AcsConverter {
 
             return String.format("%s(%s\"%s\", %s)", function, otherArgs, format, outputArgs);
         });
+
+        bodyPair = tryReplace(bodyPair, Pattern.compile("(?<=\\W|_)bool(?=\\W|_)"), groups -> "boolean");
+        bodyPair = tryReplace(bodyPair, Pattern.compile("(?<=\\W|_)str(?=\\W|_)"), groups -> "String");
+        bodyPair = tryReplace(bodyPair, Pattern.compile("(?<=\\W|_)terminate(?=\\W|_)"), groups -> "terminate()");
+        bodyPair = tryReplace(bodyPair, Pattern.compile("(?<=\\W|_)class(?=\\W|_)"), groups -> "class__");
         return bodyPair.data;
     }
 
@@ -294,7 +402,11 @@ public class AcsConverter {
                         .map(pair -> {
                             String[] parts = pair.trim().split(" ", 2);
                             String type = convertType(parts[0]);
-                            return type + " " + parts[1];
+                            String name = parts[1];
+                            if ("class".equals(name)) {
+                                name = "class__";
+                            }
+                            return type + " " + name;
                         })
                         .collect(Collectors.joining(", "));
             }

@@ -62,7 +62,9 @@ class ConvertUtils {
     private static StringBuffer prepareForRegexes(StringBuffer in) {
         int state = 0;
         int lastRangeStartedAt = 0;
-        int bracketLevel = 0;
+        int[] bracketLevel = {0, 0};
+        char[] openingBrackets = {'{', '('};
+        char[] closingBrackets = {'}', ')'};
         StringBuffer out = new StringBuffer(in.length());
         for (int i = 0; i < in.length(); i++) {
             char c = in.charAt(i);
@@ -70,7 +72,10 @@ class ConvertUtils {
             if (state == 0) { // normal
                 if (c == '"') {
                     newState = 1;
-                } else if (c == '/' && (i + 1 < in.length()) && in.charAt(i + 1) == '*') {
+                } else if (c == '/'
+                        && (i + 1 < in.length()) && in.charAt(i + 1) == '*'
+                        && (i + 2 >= in.length() || in.charAt(i + 2) != '*')
+                ) {
                     ++i; // include comment start characters
                     newState = 2;
                 } else if (c == '/' && (i + 1 < in.length()) && in.charAt(i + 1) == '/') {
@@ -84,7 +89,9 @@ class ConvertUtils {
                     newState = 0;
                 }
             } else if (state == 2) { // in a block comment
-                if (c == '*' && (i + 1 < in.length()) && in.charAt(i + 1) == '/') {
+                if (c == '*'
+                        && (in.charAt(i - 1) != '*')
+                        && (i + 1 < in.length()) && in.charAt(i + 1) == '/') {
                     out.append(c); // include comment end characters
                     ++i;
                     c = in.charAt(i + 1);
@@ -105,22 +112,24 @@ class ConvertUtils {
                 } else if (newState == 0) {
                     int len = i - lastRangeStartedAt;
                     for (int j = 0; j < len; j++) {
-                        out.append('_');
+                        out.append("_");
                     }
                     out.append(c);
                     lastRangeStartedAt = i + 1;
                 }
             } else if (state == 0) {
-                if (c == '{') {
-                    if (bracketLevel > 0) {
+                int openingBracketType = arrayIndexOf(openingBrackets, c);
+                int closingBracketType = arrayIndexOf(closingBrackets, c);
+                if (openingBracketType >= 0) {
+                    if (bracketLevel[openingBracketType] > 0) {
                         appendRange(in, out, lastRangeStartedAt, i);
                         out.append("_");
                         lastRangeStartedAt = i + 1;
                     }
-                    ++bracketLevel;
-                } else if (c == '}') {
-                    --bracketLevel;
-                    if (bracketLevel > 0) {
+                    ++bracketLevel[openingBracketType];
+                } else if (closingBracketType >= 0) {
+                    --bracketLevel[closingBracketType];
+                    if (bracketLevel[closingBracketType] > 0) {
                         appendRange(in, out, lastRangeStartedAt, i);
                         out.append("_");
                         lastRangeStartedAt = i + 1;
@@ -133,6 +142,15 @@ class ConvertUtils {
         appendRange(in, out, lastRangeStartedAt, in.length());
 
         return out;
+    }
+
+    private static int arrayIndexOf(char[] openingBrackets, char c) {
+        for (int i = 0; i < openingBrackets.length; i++) {
+            if (c == openingBrackets[i]) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private static void appendRange(StringBuffer in, StringBuffer out, int inBegin, int inEnd) {
