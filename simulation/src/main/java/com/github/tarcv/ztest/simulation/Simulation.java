@@ -1,6 +1,5 @@
 package com.github.tarcv.ztest.simulation;
 
-import com.github.tarcv.ztest.simulation.ScriptContext.NamedRunnable;
 import org.jetbrains.annotations.Nullable;
 
 import java.lang.reflect.Constructor;
@@ -76,7 +75,7 @@ public class Simulation<T extends ScriptContext> {
         fireScriptEventListeners(listener -> listener.onPlayerRespawned(player));
     }
 
-    void scheduleOnNextTic(NamedRunnable runnable) {
+    void scheduleOnNextTic(ScriptContext.NamedRunnable runnable) {
         executor.scheduleRunnable(runnable);
     }
 
@@ -220,7 +219,7 @@ public class Simulation<T extends ScriptContext> {
         try {
             if (executor.getCurrentTick() == -1) {
                 synchronized (scriptEventListeners) {
-                    List<NamedRunnable> openRunnables = scriptEventListeners.stream()
+                    List<ScriptContext.NamedRunnable> openRunnables = scriptEventListeners.stream()
                             .flatMap(listener -> listener.createInitRunnables().stream())
                             .collect(Collectors.toList());
                     printlnMarked("Executing OPEN scripts");

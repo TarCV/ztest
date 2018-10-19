@@ -1,21 +1,20 @@
-package com.github.tarcv.ztest.converter;
+package converter;
 
 import java.io.IOException;
 import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static com.github.tarcv.ztest.converter.ConvertUtils.*;
+import static converter.ConvertUtils.*;
 import static java.lang.System.lineSeparator;
 import static java.util.regex.Pattern.*;
 
-class DecorateConverter {
+public class DecorateConverter {
     private DecorateConverter() {}
 
-    static void convertDecorate(Path file) throws IOException {
+    public static void convertDecorate(Path file, Path outputDir) throws IOException {
         StringBuffer data = new StringBuffer(new String(Files.readAllBytes(file)));
         StringBuilder converted = new StringBuilder(data.length());
         StringBuilder additionalJava = new StringBuilder();
@@ -68,7 +67,7 @@ class DecorateConverter {
             throw new IllegalStateException(String.format("Didn't understood: %s%s", lineSeparator(), leftOutFinal));
         }
 
-        try (Writer writer = Files.newBufferedWriter(Paths.get(file.getFileName() + ".java"))) {
+        try (Writer writer = Files.newBufferedWriter(outputDir.resolve(file.getFileName() + ".java"))) {
             writer.append("package zdoom;")
                     .append(lineSeparator()).append(lineSeparator());
             writer.append("import com.github.tarcv.ztest.simulation.*;")

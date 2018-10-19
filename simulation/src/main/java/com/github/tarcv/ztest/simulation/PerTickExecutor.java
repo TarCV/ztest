@@ -4,9 +4,9 @@ import co.paralleluniverse.fibers.Fiber;
 import co.paralleluniverse.fibers.FiberExecutorScheduler;
 import co.paralleluniverse.fibers.FiberScheduler;
 import co.paralleluniverse.fibers.SuspendExecution;
+import co.paralleluniverse.strands.Strand.State;
 import co.paralleluniverse.strands.SuspendableRunnable;
 import co.paralleluniverse.strands.concurrent.CountDownLatch;
-import com.github.tarcv.ztest.simulation.ScriptContext.NamedRunnable;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -19,7 +19,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
-import static co.paralleluniverse.strands.Strand.State.*;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 class PerTickExecutor {
@@ -32,7 +31,7 @@ class PerTickExecutor {
     private final AtomicReference<Thread> fiberThread = new AtomicReference<>();
 
     private final List<ThreadContextImpl> delayedTickThreads = Collections.synchronizedList(new ArrayList<>());
-    private final List<NamedRunnable> scheduledRunnables = Collections.synchronizedList(new ArrayList<>());
+    private final List<ScriptContext.NamedRunnable> scheduledRunnables = Collections.synchronizedList(new ArrayList<>());
 
     private final ScriptThreadEnforcer<PerTickExecutorData> data = new ScriptThreadEnforcer<PerTickExecutorData>(this, new PerTickExecutorData());
 
@@ -54,7 +53,7 @@ class PerTickExecutor {
         assert Thread.currentThread() == actualFiberThread;
     }
 
-    void scheduleRunnable(NamedRunnable runnable) {
+    void scheduleRunnable(ScriptContext.NamedRunnable runnable) {
         scheduledRunnables.add(runnable);
     }
 
@@ -64,10 +63,10 @@ class PerTickExecutor {
         executeRunnablesInternal(scheduledRunnables);
     }
 
-    void executeTickWithRunnables(List<NamedRunnable> namedRunnable) throws TimeoutException {
+    void executeTickWithRunnables(List<ScriptContext.NamedRunnable> namedRunnable) throws TimeoutException {
         assert getCurrentTick() == -1 && delayedTickThreads.isEmpty();
 
-        ArrayList<NamedRunnable> copy = new ArrayList<>(namedRunnable);
+        ArrayList<ScriptContext.NamedRunnable> copy = new ArrayList<>(namedRunnable);
         executeRunnablesInternal(copy);
     }
 
@@ -78,14 +77,14 @@ class PerTickExecutor {
         });
     }
 
-    private void executeRunnablesInternal(List<NamedRunnable> newRunnables) throws TimeoutException {
+    private void executeRunnablesInternal(List<ScriptContext.NamedRunnable> newRunnables) throws TimeoutException {
         assertIsExecutorThread();
 
         executeWithinScriptThread(() -> ++data.get().tick);
 
         synchronized (newRunnables) {
             while (!newRunnables.isEmpty()) {
-                NamedRunnable runnable = newRunnables.remove(randomSource.nextInt(newRunnables.size()));
+                ScriptContext.NamedRunnable runnable = newRunnables.remove(randomSource.nextInt(newRunnables.size()));
                 ThreadContextImpl thread = new ThreadContextImpl(runnable);
                 thread.start(); // actually it is delayed right after starting
                 delayedTickThreads.add(thread); // to support getThreadContext call
@@ -121,9 +120,9 @@ class PerTickExecutor {
     }
 
     private static boolean isRunning(TickThread tickThread) {
-        return tickThread.getState() == RUNNING
-        || tickThread.getState() == NEW
-        || tickThread.getState() == STARTED;
+        return tickThread.getState() == State.RUNNING
+        || tickThread.getState() == State.NEW
+        || tickThread.getState() == State.STARTED;
     }
 
     private void waitTillNothingExecutes() {
@@ -198,7 +197,7 @@ class PerTickExecutor {
         private final String runnableName;
         private final SuspendableRunnable suspendableRunnable;
 
-        private ThreadContextImpl(NamedRunnable runnable) {
+        private ThreadContextImpl(ScriptContext.NamedRunnable runnable) {
             assertIsExecutorThread();
 
             runnableName = runnable.name();

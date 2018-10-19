@@ -1,4 +1,4 @@
-package com.github.tarcv.ztest.converter;
+package converter;
 
 import java.util.function.Consumer;
 import java.util.function.Function;

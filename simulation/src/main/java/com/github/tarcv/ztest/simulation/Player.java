@@ -5,10 +5,6 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static com.github.tarcv.ztest.simulation.AcsConstants.PLAYERINFO_PLAYERCLASS;
-import static com.github.tarcv.ztest.simulation.DecorateConstants.PROP_FROZEN;
-import static com.github.tarcv.ztest.simulation.DecorateConstants.PROP_TOTALLYFROZEN;
-
 public class Player implements Owner {
     private final Hud console = new Hud();
     private final String name;
@@ -61,10 +57,10 @@ public class Player implements Owner {
     void setProperty(int which, int value) {
         simulation.assertTickLockHeld(); {
             switch (which) {
-                case PROP_FROZEN:
+                case DecorateConstants.PROP_FROZEN:
                     frozen = value != 0;
                     break;
-                case PROP_TOTALLYFROZEN:
+                case DecorateConstants.PROP_TOTALLYFROZEN:
                     totallyFrozen = value != 0;
                     break;
                 default:
@@ -98,7 +94,7 @@ public class Player implements Owner {
 
     int getInfo(int whichInfo) {
         switch (whichInfo) {
-            case PLAYERINFO_PLAYERCLASS:
+            case AcsConstants.PLAYERINFO_PLAYERCLASS:
                 return (int)getCVarInternal("playerclass");
             default:
                 throw new UnsupportedOperationException("This whichInfo is not supported");

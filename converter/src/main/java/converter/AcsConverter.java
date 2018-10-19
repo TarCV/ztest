@@ -1,18 +1,14 @@
-package com.github.tarcv.ztest.converter;
-
-import com.github.tarcv.ztest.converter.ConvertUtils.*;
+package converter;
 
 import java.io.IOException;
 import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static com.github.tarcv.ztest.converter.ConvertUtils.*;
 import static java.lang.System.lineSeparator;
 import static java.util.regex.Pattern.CASE_INSENSITIVE;
 
@@ -40,14 +36,14 @@ public class AcsConverter {
 
     private AcsConverter() {}
 
-    static void convertAcs(Path file) throws IOException {
+    public static void convertAcs(Path file, Path outputDir) throws IOException {
         StringBuffer data = new StringBuffer(new String(Files.readAllBytes(file)));
         StringBuilder converted = new StringBuilder(data.length());
 
         Pattern libraryMacro = Pattern.compile("^\\s*#library\\s+\".+?\"[^\\r\\n]*", CASE_INSENSITIVE | Pattern.MULTILINE);
         Pattern ignoredInclude = Pattern.compile("^\\s*#include\\s+\"zcommon\\.acs\"[^\\r\\n]*", CASE_INSENSITIVE | Pattern.MULTILINE);
-        data = removeByPattern(data, libraryMacro);
-        data = removeByPattern(data, ignoredInclude);
+        data = ConvertUtils.removeByPattern(data, libraryMacro);
+        data = ConvertUtils.removeByPattern(data, ignoredInclude);
 
         StringBuilder global = new StringBuilder();
         StringBuilder globalInit = new StringBuilder();
@@ -78,7 +74,7 @@ public class AcsConverter {
                 "^\\s*#(?:lib)?define\\s+(\\w+)\\s+(.+)$",
                 CASE_INSENSITIVE | Pattern.MULTILINE);
 
-        DataPair dataPair = tryParseAndRemove(new DataPair(data), additionalMethod, additionalMethodGroups -> {
+        ConvertUtils.DataPair dataPair = ConvertUtils.tryParseAndRemove(new ConvertUtils.DataPair(data), additionalMethod, additionalMethodGroups -> {
             String body = additionalMethodGroups.group(1);
             if (additionalScriptJava.length() > 0) {
                 additionalScriptJava.append(lineSeparator());
@@ -86,7 +82,7 @@ public class AcsConverter {
             additionalScriptJava.append(body);
         });
 
-        dataPair = tryParseAndRemove(dataPair, script, scriptGroups -> {
+        dataPair = ConvertUtils.tryParseAndRemove(dataPair, script, scriptGroups -> {
             String name = scriptGroups.group(1);
             if (name.startsWith("\"") && name.endsWith("\"")) {
                 name = name.substring(1, name.length() -1);
@@ -139,7 +135,7 @@ public class AcsConverter {
             map.append("}").append(lineSeparator());
         });
 
-        dataPair = tryParseAndRemove(dataPair, function, functionGroups -> {
+        dataPair = ConvertUtils.tryParseAndRemove(dataPair, function, functionGroups -> {
             String returnType = convertType(functionGroups.group(1));
             String name = functionGroups.group(2);
 
@@ -155,7 +151,7 @@ public class AcsConverter {
             map.append("}").append(lineSeparator());
         });
 
-        dataPair = tryReplace(dataPair, globalVar, globalVarGroups -> {
+        dataPair = ConvertUtils.tryReplace(dataPair, globalVar, globalVarGroups -> {
             String scope = globalVarGroups.group(1).trim().toLowerCase();
             StringBuilder scopeBuilder;
             StringBuilder scopeInitBuilder;
@@ -187,7 +183,7 @@ public class AcsConverter {
             return "";
         });
 
-        dataPair = tryReplace(dataPair, var, varGroups -> {
+        dataPair = ConvertUtils.tryReplace(dataPair, var, varGroups -> {
             String type = convertType(varGroups.group(1));
             String name = varGroups.group(2).trim();
             String value = varGroups.group(3);
@@ -224,7 +220,7 @@ public class AcsConverter {
             return "";
         });
 
-        dataPair = tryParseAndRemove(dataPair, constant, constantGroups -> {
+        dataPair = ConvertUtils.tryParseAndRemove(dataPair, constant, constantGroups -> {
             String name = constantGroups.group(1).trim();
             String value = constantGroups.group(2).trim();
             String type;
@@ -243,7 +239,7 @@ public class AcsConverter {
         });
 
         String safeClassName = file.getFileName().toString().replace(".", "_");
-        try (Writer writer = Files.newBufferedWriter(Paths.get(safeClassName + ".java"))) {
+        try (Writer writer = Files.newBufferedWriter(outputDir.resolve(safeClassName + ".java"))) {
 
             writer.append("package zdoom;").append(lineSeparator());
             writer.append("import co.paralleluniverse.fibers.SuspendExecution;").append(lineSeparator());
@@ -310,7 +306,7 @@ public class AcsConverter {
                 "(?<=\\W|_)(print|printbold|hudmessage|hudmessagebold)\\s*\\(([^;)]+)(?:;([^)]+))?\\)",
                 CASE_INSENSITIVE);
         Pattern outputArg = Pattern.compile("\\S*([bcdfiklnsx]):([^,]+)\\S*(?:,)?");
-        DataPair bodyPair = tryReplace(new DataPair(body), print, printGroups -> {
+        ConvertUtils.DataPair bodyPair = ConvertUtils.tryReplace(new ConvertUtils.DataPair(body), print, printGroups -> {
             String function = printGroups.group(1);
             String output = printGroups.group(2);
             String otherArgs = printGroups.group(3);
@@ -318,7 +314,7 @@ public class AcsConverter {
             StringBuilder format = new StringBuilder();
             StringBuilder outputArgs = new StringBuilder();
 
-            tryParseAndRemove(new DataPair(output), outputArg, outputGroups -> {
+            ConvertUtils.tryParseAndRemove(new ConvertUtils.DataPair(output), outputArg, outputGroups -> {
                 String type = outputGroups.group(1).trim().toLowerCase();
                 String value = outputGroups.group(2);
                 if (outputArgs.length() > 0) {
@@ -376,10 +372,10 @@ public class AcsConverter {
             return String.format("%s(%s\"%s\", %s)", function, otherArgs, format, outputArgs);
         });
 
-        bodyPair = tryReplace(bodyPair, Pattern.compile("(?<=\\W|_)bool(?=\\W|_)"), groups -> "boolean");
-        bodyPair = tryReplace(bodyPair, Pattern.compile("(?<=\\W|_)str(?=\\W|_)"), groups -> "String");
-        bodyPair = tryReplace(bodyPair, Pattern.compile("(?<=\\W|_)terminate(?=\\W|_)"), groups -> "terminate()");
-        bodyPair = tryReplace(bodyPair, Pattern.compile("(?<=\\W|_)class(?=\\W|_)"), groups -> "class__");
+        bodyPair = ConvertUtils.tryReplace(bodyPair, Pattern.compile("(?<=\\W|_)bool(?=\\W|_)"), groups -> "boolean");
+        bodyPair = ConvertUtils.tryReplace(bodyPair, Pattern.compile("(?<=\\W|_)str(?=\\W|_)"), groups -> "String");
+        bodyPair = ConvertUtils.tryReplace(bodyPair, Pattern.compile("(?<=\\W|_)terminate(?=\\W|_)"), groups -> "terminate()");
+        bodyPair = ConvertUtils.tryReplace(bodyPair, Pattern.compile("(?<=\\W|_)class(?=\\W|_)"), groups -> "class__");
         return bodyPair.data;
     }
 
