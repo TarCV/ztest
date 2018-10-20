@@ -59,7 +59,7 @@ public class AcsConverter {
                 "^\\s*/\\*\\*TEST_ONLY_SCRIPTS\\s+([\\S\\s]+?)\\*\\*/$",
                 Pattern.MULTILINE);
         Pattern script = Pattern.compile(
-                "^script\\s+(\"\\w+\"|\\w+)\\s*(?:\\((\\s*void\\s*|\\s*\\w+\\s+\\w+\\s*(?:,\\s*\\w+\\s+\\w+\\s*)*)\\))?((?:\\s+\\w+)*)\\s*\\{([^}]+)\\}",
+                "^script\\s+(\"\\w+\"|\\w+)\\s*(?:\\((\\s*void\\s*|\\s*(?:\\/\\*\\*TEST_TYPE:\\w+\\*\\*\\/)?\\w+\\s+\\w+\\s*(?:,\\s*\\w+\\s+\\w+\\s*)*)\\))?((?:\\s+\\w+)*)\\s*\\{([^}]+)\\}",
                 CASE_INSENSITIVE | Pattern.MULTILINE);
         Pattern function = Pattern.compile(
                 "^function\\s+(\\w+)\\s+(\\w+)\\s*(?:\\((\\s*void\\s*|\\s*\\w+\\s+\\w+\\s*(?:,\\s*\\w+\\s+\\w+\\s*)*)\\))\\s*\\{([^}]+)\\}",
@@ -414,8 +414,10 @@ public class AcsConverter {
 
     private static String convertType(String acsType) {
         switch (acsType.trim().toLowerCase()) {
+            case "/**test_type:bool**/int":
             case "bool":
                 return "boolean";
+            case "/**test_type:str**/int":
             case "str":
                 return "String";
             default:
