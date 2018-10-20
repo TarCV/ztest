@@ -14,8 +14,8 @@ class DefaultZdoomSourceSet implements ZdoomSourceSet, HasPublicType {
     private final SourceDirectorySet zdoom;
     private final SourceDirectorySet allZdoom;
 
-    DefaultZdoomSourceSet(String displayName, SourceDirectorySetFactory sourceDirectorySetFactory) {
-        zdoom = sourceDirectorySetFactory.create(displayName +  " ZDoom mod source")
+    DefaultZdoomSourceSet(String name, String displayName, SourceDirectorySetFactory sourceDirectorySetFactory) {
+        zdoom = sourceDirectorySetFactory.create(name, displayName +  " ZDoom mod source")
         zdoom.getFilter().include("**/*")
         allZdoom = sourceDirectorySetFactory.create(displayName + " ZDoom mod source")
         allZdoom.source(zdoom)
