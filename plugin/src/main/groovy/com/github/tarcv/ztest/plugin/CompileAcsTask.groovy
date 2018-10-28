@@ -9,6 +9,10 @@ import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.SourceTask
 import org.gradle.api.tasks.TaskAction
 
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+
+import static java.lang.System.lineSeparator
 import static java.util.concurrent.TimeUnit.SECONDS
 
 class CompileAcsTask extends SourceTask {
@@ -88,7 +92,14 @@ class CompileAcsTask extends SourceTask {
                 }
                 def exitValue = accProcess.exitValue()
                 if (exitValue != 0) {
-                    throw new RuntimeException("ACC returned $exitValue")
+                    File errorFile = new File(file.parentFile, "acs.err")
+                    if (errorFile.exists() && errorFile.file) {
+                        String msg = String.join(lineSeparator(), Files.readAllLines(errorFile.toPath(), StandardCharsets.UTF_8))
+                        errorFile.delete()
+                        throw new RuntimeException("Compilation error:${lineSeparator()}$msg")
+                    } else {
+                        throw new RuntimeException("ACC returned $exitValue")
+                    }
                 }
             }
         })
